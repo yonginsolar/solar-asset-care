@@ -202,6 +202,291 @@ try {
       .select('*')
       .single(),
   );
+  const partnerProfile = (overrides = {}) => ({
+    p_organization_id: organization.id,
+    p_partner_id: null,
+    p_name: `가상 정비업체 ${randomUUID().slice(0, 6)}`,
+    p_partner_type: 'maintenance',
+    p_service_regions: ['경기', '서울', '경기'],
+    p_rating: null,
+    p_status: 'active',
+    p_business_registration_number: '',
+    p_license_registration_number: '',
+    p_contact_name: '가상 담당자',
+    p_contact_email: 'fixture@example.invalid',
+    p_contact_phone: '010-0000-0000',
+    p_notes: '삭제되는 합성 수용시험 업체',
+    ...overrides,
+  });
+  check(
+    Boolean(
+      (
+        await owner.client.from('partners').insert({
+          organization_id: organization.id,
+          name: '직접 등록 차단 시험',
+          partner_type: 'maintenance',
+        })
+      ).error,
+    ),
+    'partner table writes require the audited RPC',
+  );
+  check(
+    Boolean(
+      (
+        await expert.client.rpc(
+          'save_partner_profile',
+          partnerProfile({ p_name: '전문가 등록 차단 시험' }),
+        )
+      ).error,
+    ),
+    'expert cannot create a partner profile',
+  );
+  const partnerIds = [];
+  for (let index = 0; index < 3; index++)
+    partnerIds.push(
+      await required(
+        owner.client.rpc(
+          'save_partner_profile',
+          partnerProfile({
+            p_name: `가상 정비업체 ${index + 1}`,
+            p_business_registration_number: `12345678${String(index + 1).padStart(2, '0')}`,
+            p_contact_email: `FIXTURE-${index + 1}@EXAMPLE.INVALID`,
+            p_rating: 4 + index / 10,
+          }),
+        ),
+      ),
+    );
+  const ownerPrivateDetails = await required(
+    owner.client
+      .from('partner_private_details')
+      .select('*')
+      .in('partner_id', partnerIds),
+  );
+  check(
+    ownerPrivateDetails.length === 3 &&
+      ownerPrivateDetails.every(
+        (detail) =>
+          /^12345678\d{2}$/.test(detail.business_registration_number) &&
+          detail.contact_email === detail.contact_email.toLowerCase(),
+      ),
+    'owner saves normalized private partner details',
+  );
+  check(
+    (
+      await client.client
+        .from('partner_private_details')
+        .select('*')
+        .in('partner_id', partnerIds)
+    ).data?.length === 0,
+    'requester cannot read partner private details',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc(
+          'save_partner_profile',
+          partnerProfile({ p_name: '가상 정비업체 1' }),
+        )
+      ).error,
+    ),
+    'duplicate partner name and type are rejected',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc(
+          'save_partner_profile',
+          partnerProfile({
+            p_name: '다른 이름 중복 사업자',
+            p_business_registration_number: '123-45-67801',
+          }),
+        )
+      ).error,
+    ),
+    'duplicate business registration is rejected within the organization',
+  );
+  check(
+    Boolean(
+      (
+        await otherOwner.client.rpc(
+          'save_partner_profile',
+          partnerProfile({ p_partner_id: partnerIds[0] }),
+        )
+      ).error,
+    ),
+    'other organization owner cannot change partner details',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('create_quote_request_with_partners', {
+          p_plant_id: plant.id,
+          p_requester_user_id: client.id,
+          p_title: '업체 수 부족 차단 시험',
+          p_scope_summary: '합성 시험',
+          p_response_due_at: null,
+          p_partner_ids: partnerIds.slice(0, 2),
+          p_inspection_id: inspection.id,
+          p_maintenance_request_id: null,
+          p_commission_rate: 7.5,
+        })
+      ).error,
+    ),
+    'quote request rejects fewer than three partners atomically',
+  );
+  check(
+    Boolean(
+      (
+        await expert.client.rpc('create_quote_request_with_partners', {
+          p_plant_id: plant.id,
+          p_requester_user_id: client.id,
+          p_title: '전문가 요청 차단 시험',
+          p_scope_summary: '합성 시험',
+          p_response_due_at: null,
+          p_partner_ids: partnerIds,
+          p_inspection_id: inspection.id,
+          p_maintenance_request_id: null,
+          p_commission_rate: 7.5,
+        })
+      ).error,
+    ),
+    'expert cannot create a quote request',
+  );
+  const quoteRequest = await required(
+    owner.client.rpc('create_quote_request_with_partners', {
+      p_plant_id: plant.id,
+      p_requester_user_id: client.id,
+      p_title: '가상 태양광 정비 견적',
+      p_scope_summary: '합성 수용시험 범위',
+      p_response_due_at: new Date(Date.now() + 86400000).toISOString(),
+      p_partner_ids: partnerIds,
+      p_inspection_id: inspection.id,
+      p_maintenance_request_id: null,
+      p_commission_rate: 7.5,
+    }),
+  );
+  const requestedQuotes = await required(
+    owner.client
+      .from('partner_quotes')
+      .select('*')
+      .eq('quote_request_id', quoteRequest.id)
+      .order('partner_id'),
+  );
+  check(
+    requestedQuotes.length === 3 &&
+      requestedQuotes.every((quote) => quote.status === 'requested'),
+    'one transaction creates exactly three requested quotes',
+  );
+  check(
+    (
+      await client.client
+        .from('quote_requests')
+        .select('id')
+        .eq('id', quoteRequest.id)
+    ).data?.length === 1 &&
+      (
+        await client.client
+          .from('partner_quotes')
+          .select('id')
+          .eq('quote_request_id', quoteRequest.id)
+      ).data?.length === 0,
+    'requester sees the request but not unsubmitted quotes',
+  );
+  for (let index = 0; index < 2; index++)
+    await required(
+      owner.client.rpc('record_partner_quote_response', {
+        p_quote_id: requestedQuotes[index].id,
+        p_amount_krw: (index + 1) * 1000000,
+        p_estimated_days: (index + 1) * 3,
+        p_proposed_start_on: '2026-09-15',
+        p_valid_until: '2026-09-30',
+        p_scope: `가상 작업 ${index + 1}`,
+        p_conditions: '합성 수용시험 조건',
+        p_commission_rate: 7.5,
+      }),
+    );
+  check(
+    (
+      await client.client
+        .from('partner_quotes')
+        .select('id')
+        .eq('quote_request_id', quoteRequest.id)
+    ).data?.length === 2,
+    'requester sees only the two submitted quotes while collecting',
+  );
+  check(
+    Boolean(
+      (
+        await expert.client.rpc('record_partner_quote_response', {
+          p_quote_id: requestedQuotes[2].id,
+          p_amount_krw: 3000000,
+          p_estimated_days: 9,
+          p_proposed_start_on: null,
+          p_valid_until: null,
+          p_scope: '권한 차단 시험',
+          p_conditions: '',
+          p_commission_rate: 7.5,
+        })
+      ).error,
+    ),
+    'expert cannot record a partner response',
+  );
+  await required(
+    owner.client.rpc('record_partner_quote_response', {
+      p_quote_id: requestedQuotes[2].id,
+      p_amount_krw: 3000000,
+      p_estimated_days: 9,
+      p_proposed_start_on: '2026-09-20',
+      p_valid_until: '2026-10-10',
+      p_scope: '가상 작업 3',
+      p_conditions: '합성 수용시험 조건',
+      p_commission_rate: 7.5,
+    }),
+  );
+  check(
+    Boolean(
+      (
+        await otherClient.client.rpc('select_partner_quote', {
+          p_quote_id: requestedQuotes[1].id,
+        })
+      ).error,
+    ) &&
+      Boolean(
+        (
+          await expert.client.rpc('select_partner_quote', {
+            p_quote_id: requestedQuotes[1].id,
+          })
+        ).error,
+      ),
+    'unlinked requester and expert cannot select a quote',
+  );
+  await required(
+    client.client.rpc('select_partner_quote', {
+      p_quote_id: requestedQuotes[1].id,
+    }),
+  );
+  const selectedQuotes = await required(
+    owner.client
+      .from('partner_quotes')
+      .select('*')
+      .eq('quote_request_id', quoteRequest.id)
+      .order('amount_krw'),
+  );
+  const selectedRequest = await required(
+    client.client
+      .from('quote_requests')
+      .select('*')
+      .eq('id', quoteRequest.id)
+      .single(),
+  );
+  check(
+    selectedRequest.status === 'selected' &&
+      selectedRequest.selected_quote_id === requestedQuotes[1].id &&
+      selectedQuotes.filter((quote) => quote.status === 'selected').length ===
+        1 &&
+      selectedQuotes[0].commission_amount_krw === 75000,
+    'three responses become selectable and selection preserves commission math',
+  );
   const png = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWZkAAAAASUVORK5CYII=',
     'base64',
@@ -326,8 +611,10 @@ try {
     signal: new AbortController().signal,
     onProgress() {},
   };
-  const recovered = await saveOriginal(recoveryOptions),
-    duplicate = await saveOriginal(recoveryOptions);
+  const [recovered, duplicate] = await Promise.all([
+    saveOriginal(recoveryOptions),
+    saveOriginal(recoveryOptions),
+  ]);
   check(
     recovered.id === duplicate.id && recovered.captured_at === null,
     'finished-object retry registers once and does not invent a capture time',
@@ -1240,8 +1527,47 @@ try {
     }
   }
   for (const organizationId of organizations) {
+    const quoteRows = await admin
+      .from('quote_requests')
+      .select('id')
+      .eq('organization_id', organizationId);
+    if (quoteRows.error)
+      cleanupErrors.push(
+        `quote request collection: ${quoteRows.error.message}`,
+      );
+    else if (quoteRows.data.length) {
+      const r = await admin
+        .from('quote_request_findings')
+        .delete()
+        .in(
+          'quote_request_id',
+          quoteRows.data.map((row) => row.id),
+        );
+      if (r.error)
+        cleanupErrors.push(`quote_request_findings: ${r.error.message}`);
+    }
+    const partnerRows = await admin
+      .from('partners')
+      .select('id')
+      .eq('organization_id', organizationId);
+    if (partnerRows.error)
+      cleanupErrors.push(`partner collection: ${partnerRows.error.message}`);
+    else if (partnerRows.data.length)
+      for (const table of ['partner_users', 'partner_private_details']) {
+        const r = await admin
+          .from(table)
+          .delete()
+          .in(
+            'partner_id',
+            partnerRows.data.map((row) => row.id),
+          );
+        if (r.error) cleanupErrors.push(`${table}: ${r.error.message}`);
+      }
     for (const table of [
       'recycling_certificates',
+      'partner_quotes',
+      'quote_requests',
+      'partners',
       'reports',
       'report_images',
       'findings',

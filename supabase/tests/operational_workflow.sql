@@ -327,5 +327,142 @@ begin
   if exists(select 1 from public.report_snapshots) then raise exception 'withdrawn report still visible to requester'; end if;
 end $$;
 reset role;
-select 'analysis_assessment_snapshot_manual_finding_and_two_tenant_roles' as test_name, 'pass' as result;
+
+set local role authenticated;
+do $$
+declare
+  p1 uuid;
+  p2 uuid;
+  p3 uuid;
+  request_row public.quote_requests%rowtype;
+  q1 uuid;
+  q2 uuid;
+  q3 uuid;
+  caught boolean;
+begin
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000101","role":"authenticated"}',true);
+
+  caught:=false;
+  begin
+    insert into public.partners(organization_id,name,partner_type)
+    values('00000000-0000-4000-8000-000000000201','직접 등록 차단','maintenance');
+  exception when insufficient_privilege then caught:=true; end;
+  if not caught then raise exception 'direct partner write was permitted'; end if;
+
+  p1:=public.save_partner_profile(
+    '00000000-0000-4000-8000-000000000201',null,'수용시험 업체 1','maintenance',
+    array['경기','서울','경기'],4.1,'active','123-45-67801','면허-01','담당자 1',
+    'PARTNER1@EXAMPLE.INVALID','010-0000-0001','rollback fixture');
+  p2:=public.save_partner_profile(
+    '00000000-0000-4000-8000-000000000201',null,'수용시험 업체 2','maintenance',
+    array['경기'],4.2,'active','1234567802','면허-02','담당자 2',
+    'partner2@example.invalid','010-0000-0002','rollback fixture');
+  p3:=public.save_partner_profile(
+    '00000000-0000-4000-8000-000000000201',null,'수용시험 업체 3','maintenance',
+    array['경기'],4.3,'active','1234567803','면허-03','담당자 3',
+    'partner3@example.invalid','010-0000-0003','rollback fixture');
+
+  if (select count(*) from public.partner_private_details where partner_id in (p1,p2,p3))<>3
+    or (select contact_email from public.partner_private_details where partner_id=p1)<>'partner1@example.invalid'
+    or (select cardinality(service_regions) from public.partners where id=p1)<>2
+  then raise exception 'partner profile normalization failed'; end if;
+
+  caught:=false;
+  begin
+    perform public.save_partner_profile(
+      '00000000-0000-4000-8000-000000000201',null,'수용시험 업체 1','maintenance',
+      array['경기'],null,'active','','','','','','');
+  exception when others then caught:=position('같은 유형과 이름' in sqlerrm)>0; end;
+  if not caught then raise exception 'duplicate partner name was permitted'; end if;
+
+  caught:=false;
+  begin
+    perform public.save_partner_profile(
+      '00000000-0000-4000-8000-000000000201',null,'사업자번호 중복','maintenance',
+      array['경기'],null,'active','123-45-67801','','','','','');
+  exception when others then caught:=position('같은 사업자등록번호' in sqlerrm)>0; end;
+  if not caught then raise exception 'duplicate registration number was permitted'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000103","role":"authenticated"}',true);
+  caught:=false;
+  begin
+    perform public.save_partner_profile(
+      '00000000-0000-4000-8000-000000000201',null,'전문가 등록 차단','maintenance',
+      array['경기'],null,'active','','','','','','');
+  exception when others then caught:=position('권한' in sqlerrm)>0; end;
+  if not caught then raise exception 'expert partner write was permitted'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000102","role":"authenticated"}',true);
+  caught:=false;
+  begin
+    perform public.save_partner_profile(
+      '00000000-0000-4000-8000-000000000201',p1,'교차 조직 수정','maintenance',
+      array['경기'],null,'active','','','','','','');
+  exception when others then caught:=position('권한' in sqlerrm)>0; end;
+  if not caught then raise exception 'cross-organization partner update was permitted'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000101","role":"authenticated"}',true);
+  caught:=false;
+  begin
+    perform public.create_quote_request_with_partners(
+      '00000000-0000-4000-8000-000000000301',
+      '00000000-0000-4000-8000-000000000104',
+      '업체 수 부족 차단','rollback fixture',null,array[p1,p2],null,null,7.5);
+  exception when others then caught:=position('업체 3곳' in sqlerrm)>0; end;
+  if not caught then raise exception 'quote request with two partners was permitted'; end if;
+
+  select * into request_row from public.create_quote_request_with_partners(
+    '00000000-0000-4000-8000-000000000301',
+    '00000000-0000-4000-8000-000000000104',
+    '수용시험 견적 요청','rollback fixture',now()+interval '1 day',array[p1,p2,p3],null,null,7.5);
+  if (select count(*) from public.partner_quotes where quote_request_id=request_row.id)<>3
+    or exists(select 1 from public.partner_quotes where quote_request_id=request_row.id and status<>'requested')
+  then raise exception 'quote request did not create three pending responses'; end if;
+  select id into q1 from public.partner_quotes where quote_request_id=request_row.id and partner_id=p1;
+  select id into q2 from public.partner_quotes where quote_request_id=request_row.id and partner_id=p2;
+  select id into q3 from public.partner_quotes where quote_request_id=request_row.id and partner_id=p3;
+
+  perform public.record_partner_quote_response(q1,1000000,3,'2026-09-15','2026-09-30','작업 1','조건 1',7.5);
+  perform public.record_partner_quote_response(q2,2000000,6,'2026-09-16','2026-09-30','작업 2','조건 2',7.5);
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000104","role":"authenticated"}',true);
+  if (select count(*) from public.quote_requests where id=request_row.id)<>1
+    or (select count(*) from public.partner_quotes where quote_request_id=request_row.id)<>2
+    or exists(select 1 from public.partner_private_details)
+  then raise exception 'requester quote/private visibility is wrong while collecting'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000103","role":"authenticated"}',true);
+  caught:=false;
+  begin perform public.record_partner_quote_response(q3,3000000,9,null,null,'작업 3','',7.5);
+  exception when others then caught:=position('권한' in sqlerrm)>0; end;
+  if not caught then raise exception 'expert recorded a quote response'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000101","role":"authenticated"}',true);
+  perform public.record_partner_quote_response(q3,3000000,9,'2026-09-20','2026-10-10','작업 3','조건 3',7.5);
+  if (select status from public.quote_requests where id=request_row.id)<>'ready_for_selection'
+    or (select commission_amount_krw from public.partner_quotes where id=q1)<>75000
+  then raise exception 'quote readiness or commission calculation failed'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000105","role":"authenticated"}',true);
+  if exists(select 1 from public.quote_requests where id=request_row.id) then
+    raise exception 'unlinked requester can read quote request';
+  end if;
+  caught:=false;
+  begin perform public.select_partner_quote(q2);
+  exception when others then caught:=position('권한' in sqlerrm)>0; end;
+  if not caught then raise exception 'unlinked requester selected a quote'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000104","role":"authenticated"}',true);
+  perform public.select_partner_quote(q2);
+  if (select selected_quote_id from public.quote_requests where id=request_row.id)<>q2
+    or (select count(*) from public.partner_quotes where quote_request_id=request_row.id and status='selected')<>1
+    or (select count(*) from public.partner_quotes where quote_request_id=request_row.id and status='not_selected')<>2
+  then raise exception 'requester quote selection state is wrong'; end if;
+
+  perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000101","role":"authenticated"}',true);
+  if (select count(*) from public.audit_events where action in ('partner.created','quote.requested','quote.response_recorded','quote.selected'))<8
+  then raise exception 'partner/quote audit trail is incomplete'; end if;
+end $$;
+reset role;
+select 'analysis_report_partner_quote_and_two_tenant_roles' as test_name, 'pass' as result;
 rollback;

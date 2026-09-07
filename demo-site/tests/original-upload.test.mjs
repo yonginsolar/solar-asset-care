@@ -27,6 +27,7 @@ const {
   originalImageType,
   fileChecksum,
   ORIGINAL_CHUNK_BYTES,
+  MAX_ORIGINAL_BYTES,
 } = uploader;
 test('resumable identity separates account, project, inspection, kind and content', () => {
   const org = '11111111-1111-4111-8111-111111111111',
@@ -96,4 +97,18 @@ test('upload validation checks the actual signature, not the filename; content h
       new File([new Uint8Array([73, 73, 42, 1, 0, 0, 0, 0])], 'bad.tiff'),
     ),
   );
+});
+test('50MB is accepted and one byte over the limit is rejected without allocating a large fixture', async () => {
+  const signature = new Blob([
+    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+  ]);
+  const atLimit = {
+    size: MAX_ORIGINAL_BYTES,
+    slice() {
+      return signature;
+    },
+  };
+  const overLimit = { ...atLimit, size: MAX_ORIGINAL_BYTES + 1 };
+  assert.equal((await originalImageType(atLimit)).mimeType, 'image/png');
+  await assert.rejects(() => originalImageType(overLimit), /50MB 이하/);
 });

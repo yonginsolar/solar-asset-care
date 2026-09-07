@@ -1973,6 +1973,24 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      save_partner_profile: {
+        Args: {
+          p_business_registration_number: string;
+          p_contact_email: string;
+          p_contact_name: string;
+          p_contact_phone: string;
+          p_license_registration_number: string;
+          p_name: string;
+          p_notes: string;
+          p_organization_id: string;
+          p_partner_id: string | null;
+          p_partner_type: string;
+          p_rating: number | null;
+          p_service_regions: string[];
+          p_status: string;
+        };
+        Returns: string;
+      };
       select_partner_quote: {
         Args: { p_quote_id: string };
         Returns: {

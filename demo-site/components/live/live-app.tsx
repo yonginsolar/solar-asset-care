@@ -62,6 +62,7 @@ type Finding = Tables<'findings'>;
 type Report = Tables<'reports'>;
 type Maintenance = Tables<'maintenance_requests'>;
 type Partner = Tables<'partners'>;
+type PartnerPrivateDetails = Tables<'partner_private_details'>;
 type PartnerQuote = Tables<'partner_quotes'>;
 type QuoteRequest = Tables<'quote_requests'>;
 type PlantRequester = Tables<'plant_requesters'>;
@@ -275,6 +276,17 @@ function jsonText(value: Json | undefined, fallback = '') {
 function formText(form: FormData, name: string) {
   const value = form.get(name);
   return typeof value === 'string' ? value : '';
+}
+
+function splitRegions(value: string) {
+  return [
+    ...new Set(
+      value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 function statusLabel(
@@ -913,6 +925,9 @@ function AdminConsole({
   const [reports, setReports] = useState<Report[]>([]);
   const [maintenance, setMaintenance] = useState<Maintenance[]>([]);
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [partnerPrivateDetails, setPartnerPrivateDetails] = useState<
+    PartnerPrivateDetails[]
+  >([]);
   const [quoteRequests, setQuoteRequests] = useState<QuoteRequest[]>([]);
   const [partnerQuotes, setPartnerQuotes] = useState<PartnerQuote[]>([]);
   const [plantRequesters, setPlantRequesters] = useState<PlantRequester[]>([]);
@@ -952,6 +967,7 @@ function AdminConsole({
         reportResult,
         maintenanceResult,
         partnerResult,
+        partnerPrivateResult,
         quoteRequestResult,
         partnerQuoteResult,
         plantRequesterResult,
@@ -1015,6 +1031,12 @@ function AdminConsole({
         ),
         scoped(
           supabase
+            .from('partner_private_details')
+            .select('*')
+            .order('created_at'),
+        ),
+        scoped(
+          supabase
             .from('quote_requests')
             .select('*')
             .eq('organization_id', organizationId)
@@ -1047,6 +1069,7 @@ function AdminConsole({
         reportResult,
         maintenanceResult,
         partnerResult,
+        partnerPrivateResult,
         quoteRequestResult,
         partnerQuoteResult,
         plantRequesterResult,
@@ -1062,6 +1085,9 @@ function AdminConsole({
       setReports((reportResult.data ?? []) as Report[]);
       setMaintenance((maintenanceResult.data ?? []) as Maintenance[]);
       setPartners((partnerResult.data ?? []) as Partner[]);
+      setPartnerPrivateDetails(
+        (partnerPrivateResult.data ?? []) as PartnerPrivateDetails[],
+      );
       setQuoteRequests((quoteRequestResult.data ?? []) as QuoteRequest[]);
       setPartnerQuotes((partnerQuoteResult.data ?? []) as PartnerQuote[]);
       setPlantRequesters((plantRequesterResult.data ?? []) as PlantRequester[]);
@@ -1106,6 +1132,7 @@ function AdminConsole({
     reports,
     maintenance,
     partners,
+    partnerPrivateDetails,
     quoteRequests,
     partnerQuotes,
     plantRequesters,
@@ -1309,6 +1336,7 @@ type SharedProps = {
   reports: Report[];
   maintenance: Maintenance[];
   partners: Partner[];
+  partnerPrivateDetails: PartnerPrivateDetails[];
   quoteRequests: QuoteRequest[];
   partnerQuotes: PartnerQuote[];
   plantRequesters: PlantRequester[];
@@ -3097,6 +3125,7 @@ function PartnerQuotesView(
   const [serviceRegions, setServiceRegions] = useState('경기');
   const [rating, setRating] = useState('');
   const [busy, setBusy] = useState(false);
+  const [savingPartnerId, setSavingPartnerId] = useState<string | null>(null);
   const [quotePlantId, setQuotePlantId] = useState('');
   const [quoteRequesterId, setQuoteRequesterId] = useState('');
   const [quoteInspectionId, setQuoteInspectionId] = useState('');
@@ -3115,6 +3144,9 @@ function PartnerQuotesView(
   const partnerById = Object.fromEntries(
     props.partners.map((partner) => [partner.id, partner]),
   );
+  const privateDetailsByPartnerId = Object.fromEntries(
+    props.partnerPrivateDetails.map((detail) => [detail.partner_id, detail]),
+  );
   const activePartners = props.partners.filter(
     (partner) => partner.status === 'active',
   );
@@ -3132,32 +3164,89 @@ function PartnerQuotesView(
 
   async function createPartner(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
     setBusy(true);
     props.setNotice(null);
     try {
-      const { error } = await props.supabase.from('partners').insert({
-        organization_id: props.organizationId,
-        name: name.trim(),
-        partner_type: partnerType,
-        service_regions: serviceRegions
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean),
-        rating: rating ? Number(rating) : null,
-        created_by: props.session.user.id,
+      const { error } = await props.supabase.rpc('save_partner_profile', {
+        p_organization_id: props.organizationId,
+        p_partner_id: null,
+        p_name: name,
+        p_partner_type: partnerType,
+        p_service_regions: splitRegions(serviceRegions),
+        p_rating: rating ? Number(rating) : null,
+        p_status: 'active',
+        p_business_registration_number: formText(
+          data,
+          'business_registration_number',
+        ),
+        p_license_registration_number: formText(
+          data,
+          'license_registration_number',
+        ),
+        p_contact_name: formText(data, 'contact_name'),
+        p_contact_email: formText(data, 'contact_email'),
+        p_contact_phone: formText(data, 'contact_phone'),
+        p_notes: formText(data, 'notes'),
       });
       if (error) throw error;
       props.setNotice({
         tone: 'success',
-        text: '업체를 등록했습니다. 연락처·면허 정보와 견적 요청은 이 업체에 이어서 연결할 수 있습니다.',
+        text: '업체의 기본정보와 담당자·면허 정보를 함께 등록했습니다.',
       });
       setName('');
       setRating('');
+      form.reset();
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function updatePartner(
+    event: SyntheticEvent<HTMLFormElement>,
+    partner: Partner,
+  ) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setSavingPartnerId(partner.id);
+    props.setNotice(null);
+    try {
+      const ratingValue = formText(data, 'rating').trim();
+      const { error } = await props.supabase.rpc('save_partner_profile', {
+        p_organization_id: props.organizationId,
+        p_partner_id: partner.id,
+        p_name: formText(data, 'name'),
+        p_partner_type: formText(data, 'partner_type'),
+        p_service_regions: splitRegions(formText(data, 'service_regions')),
+        p_rating: ratingValue ? Number(ratingValue) : null,
+        p_status: formText(data, 'status'),
+        p_business_registration_number: formText(
+          data,
+          'business_registration_number',
+        ),
+        p_license_registration_number: formText(
+          data,
+          'license_registration_number',
+        ),
+        p_contact_name: formText(data, 'contact_name'),
+        p_contact_email: formText(data, 'contact_email'),
+        p_contact_phone: formText(data, 'contact_phone'),
+        p_notes: formText(data, 'notes'),
+      });
+      if (error) throw error;
+      props.setNotice({
+        tone: 'success',
+        text: `${partner.name} 업체 정보를 수정했습니다. 변경 기록도 저장했습니다.`,
+      });
+      await props.refresh();
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
+    } finally {
+      setSavingPartnerId(null);
     }
   }
 
@@ -3401,10 +3490,16 @@ function PartnerQuotesView(
             onSubmit={createPartner}
             className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
-            <h2 className="font-bold">업체 기본정보 등록</h2>
+            <div>
+              <h2 className="font-bold">업체 등록</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                공개 비교정보와 관리자 전용 연락처·등록정보를 함께 저장합니다.
+              </p>
+            </div>
             {!props.canWrite && <ReadOnlyNote />}
             <Field label="업체명">
               <Input
+                name="name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 disabled={!props.canWrite}
@@ -3414,6 +3509,7 @@ function PartnerQuotesView(
             </Field>
             <Field label="업체 유형">
               <select
+                name="partner_type"
                 className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
                 value={partnerType}
                 onChange={(event) => setPartnerType(event.target.value)}
@@ -3428,6 +3524,7 @@ function PartnerQuotesView(
             </Field>
             <Field label="가용 지역" hint="쉼표로 구분">
               <Input
+                name="service_regions"
                 value={serviceRegions}
                 onChange={(event) => setServiceRegions(event.target.value)}
                 disabled={!props.canWrite}
@@ -3436,12 +3533,67 @@ function PartnerQuotesView(
             </Field>
             <Field label="평점" hint="신규 업체는 비워둘 수 있습니다.">
               <Input
+                name="rating"
                 type="number"
                 min="0"
                 max="5"
                 step="0.1"
                 value={rating}
                 onChange={(event) => setRating(event.target.value)}
+                disabled={!props.canWrite}
+              />
+            </Field>
+            <div className="border-t pt-4">
+              <h3 className="text-sm font-bold text-slate-700">
+                관리자 전용 상세정보
+              </h3>
+            </div>
+            <Field label="사업자등록번호" hint="선택 사항 · 숫자 10자리">
+              <Input
+                name="business_registration_number"
+                inputMode="numeric"
+                maxLength={12}
+                disabled={!props.canWrite}
+                placeholder="123-45-67890"
+              />
+            </Field>
+            <Field label="면허·등록번호" hint="선택 사항">
+              <Input
+                name="license_registration_number"
+                maxLength={100}
+                disabled={!props.canWrite}
+              />
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="담당자명">
+                <Input
+                  name="contact_name"
+                  maxLength={100}
+                  disabled={!props.canWrite}
+                />
+              </Field>
+              <Field label="담당자 연락처">
+                <Input
+                  name="contact_phone"
+                  type="tel"
+                  maxLength={50}
+                  disabled={!props.canWrite}
+                />
+              </Field>
+            </div>
+            <Field label="담당자 이메일">
+              <Input
+                name="contact_email"
+                type="email"
+                maxLength={320}
+                disabled={!props.canWrite}
+              />
+            </Field>
+            <Field label="관리 메모">
+              <Textarea
+                name="notes"
+                rows={3}
+                maxLength={4000}
                 disabled={!props.canWrite}
               />
             </Field>
@@ -3657,28 +3809,169 @@ function PartnerQuotesView(
               <span className="text-xs text-slate-400">관리자 전용</span>
             </div>
             <div className="divide-y">
-              {props.partners.map((partner) => (
-                <div
-                  key={partner.id}
-                  className="flex flex-col items-start justify-between gap-3 p-5 sm:flex-row sm:items-center"
-                >
-                  <div>
-                    <strong className="text-sm">{partner.name}</strong>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {partnerTypeLabels[partner.partner_type] ??
-                        partner.partner_type}{' '}
-                      · {partner.service_regions.join(', ') || '지역 미입력'}
-                    </p>
-                  </div>
-                  <StatusPill>
-                    {partner.status === 'active'
-                      ? `평점 ${partner.rating ?? '신규'}`
-                      : partner.status === 'inactive'
-                        ? '휴면'
-                        : '차단'}
-                  </StatusPill>
-                </div>
-              ))}
+              {props.partners.map((partner) => {
+                const detail = privateDetailsByPartnerId[partner.id];
+                return (
+                  <details key={partner.id} className="group p-5">
+                    <summary
+                      aria-label={`${partner.name} 업체 정보 편집`}
+                      className="flex cursor-pointer list-none flex-col items-start justify-between gap-3 sm:flex-row sm:items-center"
+                    >
+                      <div>
+                        <strong className="text-sm">{partner.name}</strong>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {partnerTypeLabels[partner.partner_type] ??
+                            partner.partner_type}{' '}
+                          ·{' '}
+                          {partner.service_regions.join(', ') || '지역 미입력'}
+                          {detail?.contact_name
+                            ? ` · 담당 ${detail.contact_name}`
+                            : ''}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <StatusPill>
+                          {partner.status === 'active'
+                            ? `평점 ${partner.rating ?? '신규'}`
+                            : partner.status === 'inactive'
+                              ? '휴면'
+                              : '차단'}
+                        </StatusPill>
+                        <span className="text-xs font-semibold text-teal-700 group-open:hidden">
+                          정보 열기
+                        </span>
+                        <span className="hidden text-xs font-semibold text-teal-700 group-open:inline">
+                          닫기
+                        </span>
+                      </div>
+                    </summary>
+                    <form
+                      className="mt-5 space-y-4 border-t pt-5"
+                      onSubmit={(event) => void updatePartner(event, partner)}
+                    >
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <Field label="업체명">
+                          <Input
+                            name="name"
+                            defaultValue={partner.name}
+                            maxLength={160}
+                            required
+                          />
+                        </Field>
+                        <Field label="업체 유형">
+                          <select
+                            name="partner_type"
+                            className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                            defaultValue={partner.partner_type}
+                          >
+                            {Object.entries(partnerTypeLabels).map(
+                              ([value, label]) => (
+                                <option key={value} value={value}>
+                                  {label}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                        </Field>
+                        <Field label="가용 지역" hint="쉼표로 구분">
+                          <Input
+                            name="service_regions"
+                            defaultValue={partner.service_regions.join(', ')}
+                            placeholder="경기, 서울"
+                          />
+                        </Field>
+                        <Field label="평점">
+                          <Input
+                            name="rating"
+                            type="number"
+                            min="0"
+                            max="5"
+                            step="0.1"
+                            defaultValue={partner.rating ?? ''}
+                          />
+                        </Field>
+                        <Field label="업체 상태">
+                          <select
+                            name="status"
+                            className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                            defaultValue={partner.status}
+                          >
+                            <option value="active">사용 중</option>
+                            <option value="inactive">휴면</option>
+                            <option value="blocked">차단</option>
+                          </select>
+                        </Field>
+                        <Field
+                          label="사업자등록번호"
+                          hint="선택 사항 · 숫자 10자리"
+                        >
+                          <Input
+                            name="business_registration_number"
+                            inputMode="numeric"
+                            maxLength={12}
+                            defaultValue={
+                              detail?.business_registration_number ?? ''
+                            }
+                          />
+                        </Field>
+                        <Field label="면허·등록번호">
+                          <Input
+                            name="license_registration_number"
+                            maxLength={100}
+                            defaultValue={
+                              detail?.license_registration_number ?? ''
+                            }
+                          />
+                        </Field>
+                        <Field label="담당자명">
+                          <Input
+                            name="contact_name"
+                            maxLength={100}
+                            defaultValue={detail?.contact_name ?? ''}
+                          />
+                        </Field>
+                        <Field label="담당자 연락처">
+                          <Input
+                            name="contact_phone"
+                            type="tel"
+                            maxLength={50}
+                            defaultValue={detail?.contact_phone ?? ''}
+                          />
+                        </Field>
+                        <Field label="담당자 이메일">
+                          <Input
+                            name="contact_email"
+                            type="email"
+                            maxLength={320}
+                            defaultValue={detail?.contact_email ?? ''}
+                          />
+                        </Field>
+                      </div>
+                      <Field label="관리 메모">
+                        <Textarea
+                          name="notes"
+                          rows={3}
+                          maxLength={4000}
+                          defaultValue={detail?.notes ?? ''}
+                        />
+                      </Field>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        className="w-full sm:w-auto"
+                        disabled={savingPartnerId !== null}
+                      >
+                        {savingPartnerId === partner.id ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <CheckCircle2 />
+                        )}
+                        업체 정보 저장
+                      </Button>
+                    </form>
+                  </details>
+                );
+              })}
               {props.partners.length === 0 && (
                 <p className="px-5 py-10 text-center text-sm text-slate-400">
                   왼쪽에서 첫 업체를 등록하세요.

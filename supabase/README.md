@@ -24,10 +24,31 @@ API 키는 이 디렉터리나 Git 저장소에 보관하지 않는다. 브라�
 9. `20260904124028_harden_tenant_links_and_expert_writes.sql`
 10. `20260904132006_scaffold_partner_quote_workflow.sql`
 11. `20260904132507_split_quote_finding_policies.sql`
+12. `20260904135849_create_operational_quote_request.sql`
+13. `20260904135856_expand_operational_plant_registration.sql`
+14. `20260904141805_enforce_report_workflow_transitions.sql`
+15. `20260904142212_make_relative_analysis_atomic.sql`
+16. `20260904142314_fix_analysis_finished_timestamp.sql`
+17. `20260904142751_fix_parent_organization_trigger_record_access.sql`
+18. `20260904233533_fix_bootstrap_token_normalization.sql`
+19. `20260905025238_add_assessments_and_report_snapshots.sql`
+20. `20260905030420_add_audited_manual_findings.sql`
+21. `20260905031532_archive_immutable_report_pdfs.sql`
+22. `20260905032349_allow_admin_guard_parent_cascade.sql`
+23. `20260905032523_fix_insert_returning_visibility.sql`
+24. `20260905071516_add_reviewed_report_images.sql`
+25. `20260905072423_harden_report_image_storage_visibility.sql`
+26. `20260905072954_restrict_customer_assets_to_application_gateway.sql`
+27. `20260905073803_protect_registered_original_files.sql`
+28. `20260905111937_add_recycling_certificates.sql`
+29. `20260905113554_allow_reviewed_certificate_corrections.sql`
+30. `20260907075659_manage_partner_profiles.sql`
+31. `20260907081023_move_partner_profile_helper_private.sql`
 
-현재 원격 프로젝트에는 위 열한 개 변경이 적용돼 있다. SQL은 새 Supabase 프로젝트에
-순서대로 적용할 수 있도록 저장했으며, 배포 대상이 결정되기 전까지 추가 공급자
-기능에 종속되는 코드는 만들지 않는다.
+현재 원격 프로젝트에는 위 31개 변경이 적용돼 있다. 로컬 파일 번호와 원격 적용 번호,
+적용 내용의 확인값을 대조해 일치시켰다. SQL은 새 Supabase 프로젝트에 순서대로 적용할
+수 있도록 저장했으며, 배포 대상이 결정되기 전까지 추가 공급자 기능에 종속되는 코드는
+만들지 않는다.
 
 ## 파일 경로 규칙
 
@@ -53,6 +74,9 @@ RLS 정책은 이 첫 구간과 로그인 사용자의 활성 조직 멤버십�
 업체는 조직 내부 역할로 넣지 않고 별도 `partners` 데이터로 관리한다. MVP에서는
 관리자가 업체와 견적을 입력하고 의뢰인이 본인 발전소의 제출 견적만 비교·선택한다.
 업체 연락처·사업자·면허 정보는 공개 비교 정보와 분리해 관리자에게만 보인다.
+업체 저장은 관리자 전용 함수에서 기본정보와 상세정보를 한 번에 처리한다. 같은 조직의
+같은 업체명·유형과 사업자등록번호 중복을 막고, 연락처 원문을 제외한 변경 요약을
+감사기록에 남긴다. 브라우저에서 업체 표를 직접 쓰는 권한은 열지 않는다.
 
 `partner_users`는 향후 업체 포털용 계정 연결 자리다. `private.partner_quote_access_tokens`는
 업체가 계정 없이 견적을 제출하는 일회용 링크를 위한 해시 저장 자리다. 두 기능 모두
