@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type SyntheticEvent } from 'react';
+import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import Image from 'next/image';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,11 @@ import {
   kindLabels,
   severityLabels,
 } from '@/lib/finding-labels';
+import {
+  regionFromPoints,
+  validImageRegion,
+  type ImageRegion,
+} from '@/lib/image-region';
 
 type Finding = Tables<'findings'>;
 type Props = {
@@ -176,12 +181,10 @@ function FindingForm(
   const [busy, setBusy] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const sourceFile = files.find((file) => file.id === fileId);
-  const region = f?.region as {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null;
+  const initialRegion = validImageRegion(f?.region) ? f.region : null;
+  const [selectedRegion, setSelectedRegion] =
+    useState<ImageRegion | null>(initialRegion);
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
   const { supabase } = props;
   useEffect(() => {
     let active = true;
@@ -207,6 +210,39 @@ function FindingForm(
       window.clearTimeout(timer);
     };
   }, [sourceFile, supabase]);
+
+  function pointOnImage(event: React.PointerEvent<HTMLButtonElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: (event.clientX - bounds.left) / bounds.width,
+      y: (event.clientY - bounds.top) / bounds.height,
+    };
+  }
+
+  function beginRegion(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!preview) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStart.current = pointOnImage(event);
+    setSelectedRegion(null);
+  }
+
+  function moveRegion(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!dragStart.current) return;
+    const next = regionFromPoints(
+      dragStart.current,
+      pointOnImage(event),
+      0.00001,
+    );
+    if (next) setSelectedRegion(next);
+  }
+
+  function finishRegion(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!dragStart.current) return;
+    const next = regionFromPoints(dragStart.current, pointOnImage(event));
+    dragStart.current = null;
+    setSelectedRegion(next);
+  }
+
   async function submit(e: SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
@@ -281,6 +317,7 @@ function FindingForm(
       if (!f) {
         formElement.reset();
         setFileId('');
+        setSelectedRegion(null);
       }
       props.finish();
       await props.refresh();
@@ -312,7 +349,12 @@ function FindingForm(
         <select
           className={selectClass}
           value={fileId}
-          onChange={(e) => setFileId(e.target.value)}
+          onChange={(e) => {
+            setFileId(e.target.value);
+            setSelectedRegion(
+              e.target.value === f?.source_file_id ? initialRegion : null,
+            );
+          }}
           disabled={f?.source === 'rule_candidate'}
         >
           <option value="">원본 선택</option>
@@ -329,32 +371,68 @@ function FindingForm(
         </p>
       )}
       {preview && (
-        <div className="relative overflow-hidden rounded-lg bg-slate-100">
+        <button
+          type="button"
+          className="relative block w-full touch-none select-none overflow-hidden rounded-lg bg-slate-100 text-left outline-none ring-teal-500 focus-visible:ring-2"
+          aria-label="의심 영역 선택: 사진에서 영역을 끌어 표시하세요"
+          onPointerDown={beginRegion}
+          onPointerMove={moveRegion}
+          onPointerUp={finishRegion}
+          onPointerCancel={() => {
+            dragStart.current = null;
+          }}
+        >
           <Image
             unoptimized
             src={preview}
             alt="판정 근거 원본"
             width={1024}
             height={768}
-            className="block h-auto w-full"
+            draggable={false}
+            className="pointer-events-none block h-auto w-full"
             onError={() =>
               setPreviewError(
                 '원본 링크가 만료됐습니다. 원본을 다시 선택해 주세요.',
               )
             }
           />
-          {region && (
+          {selectedRegion && (
             <div
-              aria-label="기록된 판정 영역"
               className="pointer-events-none absolute border-2 border-rose-500 bg-rose-500/15"
               style={{
-                left: `${region.x * 100}%`,
-                top: `${region.y * 100}%`,
-                width: `${region.width * 100}%`,
-                height: `${region.height * 100}%`,
+                left: `${selectedRegion.x * 100}%`,
+                top: `${selectedRegion.y * 100}%`,
+                width: `${selectedRegion.width * 100}%`,
+                height: `${selectedRegion.height * 100}%`,
               }}
             />
           )}
+        </button>
+      )}
+      {preview && (
+        <div className="rounded-xl border bg-slate-50 p-3 text-sm text-slate-700">
+          <p>사진에서 의심 부위를 손가락이나 마우스로 끌어 표시하세요.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                setSelectedRegion({ x: 0, y: 0, width: 1, height: 1 })
+              }
+            >
+              사진 전체 선택
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!selectedRegion}
+              onClick={() => setSelectedRegion(null)}
+            >
+              영역 지우기
+            </Button>
+          </div>
         </div>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
@@ -433,32 +511,14 @@ function FindingForm(
           defaultValue={f?.measurement_source ?? ''}
         />
       </Field>
-      <fieldset className="rounded-xl border p-3">
-        <legend className="px-1 text-sm">
-          이미지 영역 (선택·원본 너비/높이 대비 %)
-        </legend>
-        <div className="grid grid-cols-2 gap-3">
-          {(
-            [
-              ['x', '왼쪽'],
-              ['y', '위쪽'],
-              ['width', '폭'],
-              ['height', '높이'],
-            ] as const
-          ).map(([key, label]) => (
-            <Field key={key} label={label}>
-              <Input
-                name={key}
-                type="number"
-                min={key === 'width' || key === 'height' ? 0.0001 : 0}
-                max="100"
-                step="any"
-                defaultValue={region ? region[key] * 100 : ''}
-              />
-            </Field>
-          ))}
-        </div>
-      </fieldset>
+      {(['x', 'y', 'width', 'height'] as const).map((key) => (
+        <input
+          key={key}
+          name={key}
+          type="hidden"
+          value={selectedRegion ? selectedRegion[key] * 100 : ''}
+        />
+      ))}
       <Field label="판정">
         <select
           name="disposition"
