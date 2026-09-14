@@ -44,11 +44,23 @@ API 키는 이 디렉터리나 Git 저장소에 보관하지 않는다. 브라�
 29. `20260905113554_allow_reviewed_certificate_corrections.sql`
 30. `20260907075659_manage_partner_profiles.sql`
 31. `20260907081023_move_partner_profile_helper_private.sql`
+32. `20260914001956_project_keepalive_rpc.sql`
 
-현재 원격 프로젝트에는 위 31개 변경이 적용돼 있다. 로컬 파일 번호와 원격 적용 번호,
+현재 원격 프로젝트에는 위 32개 변경이 적용돼 있다. 로컬 파일 번호와 원격 적용 번호,
 적용 내용의 확인값을 대조해 일치시켰다. SQL은 새 Supabase 프로젝트에 순서대로 적용할
 수 있도록 저장했으며, 배포 대상이 결정되기 전까지 추가 공급자 기능에 종속되는 코드는
 만들지 않는다.
+
+## 무료 프로젝트 활동 유지 점검
+
+GitHub Actions의 `Keep Supabase project active` 작업이 하루 세 번 읽기 전용
+`project_keepalive()` 함수를 호출한다. 이 함수는 업무 데이터를 읽거나 수정하지 않고
+정상 응답만 반환한다. 연결 주소와 publishable key는 GitHub 저장소 비밀값
+`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`로 관리하며 소스에는 저장하지 않는다.
+
+자동 작업이 실패하면 GitHub Actions 실행 결과를 확인한다. 장기간 중단이 허용되지 않는
+정식 운영 단계에서는 이 점검을 무료 플랜의 가용성 보장 수단으로 보지 않고 Pro 전환을
+검토한다.
 
 ## 파일 경로 규칙
 

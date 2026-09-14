@@ -1,0 +1,55 @@
+name: Keep Supabase project active
+
+on:
+  schedule:
+    # 09:17, 17:17, and 01:17 KST. Supabase recommends a few daily
+    # database requests for active Free Plan projects.
+    - cron: "17 0,8,16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  query-project:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run read-only database health check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_PUBLISHABLE_KEY:-}" ]]; then
+            echo "Required Supabase repository secrets are missing." >&2
+            exit 1
+          fi
+
+          response="$({
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --retry 3 \
+              --retry-all-errors \
+              --max-time 20 \
+              --request POST \
+              "${SUPABASE_URL}/rest/v1/rpc/project_keepalive" \
+              --header "apikey: ${SUPABASE_PUBLISHABLE_KEY}" \
+              --header "Content-Type: application/json" \
+              --data '{}'
+          })"
+
+          if [[ "${response}" != "true" ]]; then
+            echo "Unexpected health-check response." >&2
+            exit 1
+          fi
+
+          echo "Supabase database health check succeeded."
