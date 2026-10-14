@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import type { Database, Tables } from '@/lib/supabase/database.types';
+import { loadInspectionPreview } from '@/lib/inspection-preview';
 import {
   defectLabels,
   dispositionLabels,
@@ -182,12 +183,15 @@ function FindingForm(
   const [previewError, setPreviewError] = useState('');
   const sourceFile = files.find((file) => file.id === fileId);
   const initialRegion = validImageRegion(f?.region) ? f.region : null;
-  const [selectedRegion, setSelectedRegion] =
-    useState<ImageRegion | null>(initialRegion);
+  const [selectedRegion, setSelectedRegion] = useState<ImageRegion | null>(
+    initialRegion,
+  );
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const { supabase } = props;
   useEffect(() => {
     let active = true;
+    let imageUrl = '';
+    const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setPreview('');
       setPreviewError('');
@@ -196,17 +200,25 @@ function FindingForm(
         !['image/jpeg', 'image/png'].includes(sourceFile.mime_type ?? '')
       )
         return;
-      void supabase.storage
-        .from(sourceFile.storage_bucket)
-        .createSignedUrl(sourceFile.storage_path, 180)
-        .then(({ data, error }) => {
+      void loadInspectionPreview(supabase, sourceFile, controller.signal)
+        .then((data) => {
           if (!active) return;
-          if (error) setPreviewError('원본 미리보기를 불러오지 못했습니다.');
-          else setPreview(data.signedUrl);
+          imageUrl = URL.createObjectURL(data);
+          setPreview(imageUrl);
+        })
+        .catch((error) => {
+          if (active)
+            setPreviewError(
+              error instanceof Error
+                ? error.message
+                : '사진을 불러오지 못했습니다.',
+            );
         });
     }, 0);
     return () => {
       active = false;
+      controller.abort();
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
       window.clearTimeout(timer);
     };
   }, [sourceFile, supabase]);
@@ -385,14 +397,14 @@ function FindingForm(
           <Image
             unoptimized
             src={preview}
-            alt="판정 근거 원본"
+            alt="판정 근거 사진 미리보기"
             width={1024}
             height={768}
             draggable={false}
             className="pointer-events-none block h-auto w-full"
             onError={() =>
               setPreviewError(
-                '원본 링크가 만료됐습니다. 원본을 다시 선택해 주세요.',
+                '사진을 불러오지 못했습니다. 사진을 다시 선택해 주세요.',
               )
             }
           />

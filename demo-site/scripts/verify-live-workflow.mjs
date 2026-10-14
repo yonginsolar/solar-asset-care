@@ -15,6 +15,10 @@ if (process.env.SOLAR_ACCEPTANCE_RUN !== '1')
   );
 const project = 'vzgmryqglptxowbdewkf';
 const origin = acceptanceTarget(process.env);
+if (process.env.SOLAR_UI_ACCEPTANCE === '1' && !process.stdin.isTTY)
+  throw new Error(
+    'Interactive UI testing needs a retained terminal with tty:true so cleanup can be resumed.',
+  );
 const env = Object.fromEntries(
   readFileSync(new URL('../.env.local', import.meta.url), 'utf8')
     .split('\n')
@@ -671,6 +675,73 @@ try {
   check(
     digest(Buffer.from(await downloaded.arrayBuffer())) === digest(png),
     'original upload and byte integrity',
+  );
+  const previewPath = `${organization.id}/${inspection.id}/${file.id}-${file.sha256}.jpg`;
+  paths.push({ bucket: 'inspection-derived', path: previewPath });
+  const previewUrl = `${origin}/api/inspection-files?id=${file.id}`;
+  const missingPreview = await fetch(previewUrl, {
+    headers: { Authorization: `Bearer ${expert.token}` },
+  });
+  check(
+    missingPreview.status === 404 &&
+      (await missingPreview.json()).code === 'preview_missing',
+    'missing preview is distinct from missing permission',
+  );
+  async function previewUpload(actor, image = testJpeg) {
+    const form = new FormData();
+    form.set('id', file.id);
+    form.set('image', new Blob([image], { type: 'image/jpeg' }), 'preview.jpg');
+    return fetch(`${origin}/api/inspection-files`, {
+      method: 'POST',
+      headers: actor ? { Authorization: `Bearer ${actor.token}` } : {},
+      body: form,
+    });
+  }
+  for (const actor of [null, client, otherOwner]) {
+    const expected = actor ? 404 : 401;
+    check(
+      (await previewUpload(actor)).status === expected,
+      'anonymous, requester and other organization cannot create previews',
+    );
+    for (const original of ['', '&original=1'])
+      check(
+        (
+          await fetch(previewUrl + original, {
+            headers: actor ? { Authorization: `Bearer ${actor.token}` } : {},
+          })
+        ).status === expected,
+        'private preview and original require inspection work permission',
+      );
+  }
+  check(
+    (await previewUpload(expert, Buffer.alloc(350001))).status === 400,
+    'invalid or oversized preview image is rejected',
+  );
+  const preparedPreview = await previewUpload(expert);
+  if (!preparedPreview.ok) throw new Error(await preparedPreview.text());
+  check(
+    (await previewUpload(expert)).ok,
+    'preview creation is idempotent without overwriting originals',
+  );
+  const small = await fetch(previewUrl, {
+    headers: { Authorization: `Bearer ${owner.token}` },
+  });
+  check(
+    small.ok &&
+      small.headers.get('content-type') === 'image/jpeg' &&
+      (await small.arrayBuffer()).byteLength <= 350000,
+    'authorized screen reads the bounded JPEG preview',
+  );
+  const originalFile = await fetch(previewUrl + '&original=1', {
+    headers: { Authorization: `Bearer ${expert.token}` },
+  });
+  check(
+    originalFile.ok &&
+      originalFile.headers
+        .get('content-disposition')
+        .startsWith('attachment;') &&
+      digest(Buffer.from(await originalFile.arrayBuffer())) === digest(png),
+    'separate original download preserves every byte and is not rendered inline',
   );
   async function addPhoto(actor, id) {
     const form = new FormData();
@@ -1516,6 +1587,36 @@ try {
           )
             paths.push({ bucket, path: row.storage_path });
     }
+  for (const organizationId of organizations) {
+    const result = await admin
+      .from('inspection_files')
+      .select('*')
+      .eq('organization_id', organizationId);
+    if (result.error)
+      cleanupErrors.push(`original collection: ${result.error.message}`);
+    else
+      for (const row of result.data || []) {
+        if (
+          !paths.some(
+            (p) =>
+              p.bucket === row.storage_bucket && p.path === row.storage_path,
+          )
+        )
+          paths.push({ bucket: row.storage_bucket, path: row.storage_path });
+        if (
+          ['thermal_original', 'visible_original'].includes(row.kind) &&
+          row.sha256
+        ) {
+          const path = `${row.organization_id}/${row.inspection_id}/${row.id}-${row.sha256}.jpg`;
+          if (
+            !paths.some(
+              (p) => p.bucket === 'inspection-derived' && p.path === path,
+            )
+          )
+            paths.push({ bucket: 'inspection-derived', path });
+        }
+      }
+  }
   for (const object of paths) {
     const r = await admin.storage.from(object.bucket).remove([object.path]);
     if (r.error) cleanupErrors.push(`storage: ${r.error.message}`);

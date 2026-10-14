@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import type { Database, Tables } from '@/lib/supabase/database.types';
 import { validRect, type Rect, type ReportImage } from '@/lib/report-visuals';
 import { ReportPhoto } from './report-visuals';
+import { loadInspectionPreview } from '@/lib/inspection-preview';
 
 export function ReportImagesView({
   supabase,
@@ -75,29 +76,18 @@ export function ReportImagesView({
   useEffect(() => {
     let active = true,
       url = '';
+    const controller = new AbortController();
     const source = selectedSource;
     if (source)
       void (async () => {
         try {
-          const result = await supabase.storage
-            .from(source.storage_bucket)
-            .download(source.storage_path);
-          if (result.error || !result.data)
-            throw new Error('원본 사진을 불러오지 못했습니다.');
-          const hash = Array.from(
-            new Uint8Array(
-              await crypto.subtle.digest(
-                'SHA-256',
-                await result.data.arrayBuffer(),
-              ),
-            ),
-            (b) => b.toString(16).padStart(2, '0'),
-          ).join('');
-          if (hash !== source.sha256)
-            throw new Error(
-              '원본 확인값이 다릅니다. 관리자에게 문의해 주세요.',
-            );
-          url = URL.createObjectURL(result.data);
+          const data = await loadInspectionPreview(
+            supabase,
+            source,
+            controller.signal,
+          );
+          if (!active) return;
+          url = URL.createObjectURL(data);
           const img = new Image();
           img.src = url;
           await img.decode();
@@ -112,6 +102,7 @@ export function ReportImagesView({
       })();
     return () => {
       active = false;
+      controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
   }, [supabase, selectedSource]);

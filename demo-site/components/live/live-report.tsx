@@ -11,7 +11,7 @@ import {
   SunMedium,
 } from 'lucide-react';
 
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import type { Tables } from '@/lib/supabase/database.types';
 import { AssessmentSummary } from './live-assessments';
@@ -229,11 +229,9 @@ export function LiveReport({ reportId }: { reportId: string }) {
             보고서를 표시할 수 없습니다
           </h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">{error}</p>
-          <Link href="/admin">
-            <Button className="mt-6">
-              <ArrowLeft />
-              운영센터로 이동
-            </Button>
+          <Link href="/admin" className={buttonVariants({ className: 'mt-6' })}>
+            <ArrowLeft />
+            운영센터로 이동
           </Link>
         </div>
       </main>
@@ -258,11 +256,9 @@ export function LiveReport({ reportId }: { reportId: string }) {
   return (
     <main className="min-h-screen bg-slate-200 px-2 py-4 text-slate-900 sm:px-4 sm:py-8 print:bg-white print:p-0">
       <div className="report-actions mx-auto mb-4 flex max-w-[210mm] flex-col gap-2 sm:flex-row sm:justify-between">
-        <Link href="/admin">
-          <Button variant="outline">
-            <ArrowLeft />
-            운영센터
-          </Button>
+        <Link href="/admin" className={buttonVariants({ variant: 'outline' })}>
+          <ArrowLeft />
+          운영센터
         </Link>
         {['published', 'withdrawn'].includes(data.report.status) && (
           <Button disabled={downloading} onClick={() => void downloadPdf()}>
@@ -487,8 +483,7 @@ export function LiveReport({ reportId }: { reportId: string }) {
         )}
         {data.snapshot && (
           <p className="mt-3 break-all text-xs text-slate-500">
-            검토본 보관 {format(data.snapshot.frozen_at)} · 내용 확인값{' '}
-            {data.snapshot.sha256}
+            검토본 보관 {format(data.snapshot.frozen_at)}
           </p>
         )}
       </article>

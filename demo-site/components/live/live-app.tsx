@@ -53,6 +53,11 @@ import { ReportImagesView } from './live-report-images';
 import { RecyclingView } from './live-recycling';
 import { requestReportPdf } from '@/lib/report-download';
 import { koreanDate, parseKoreanInput } from '@/lib/operational-assessment';
+import {
+  saveInspectionPreview,
+  downloadInspectionOriginal,
+} from '@/lib/inspection-preview';
+import { InspectionPreviewButton } from './inspection-preview';
 
 type Plant = Tables<'plants'>;
 type Inspection = Tables<'inspections'>;
@@ -236,6 +241,10 @@ function errorMessage(error: unknown) {
       weak_password:
         '비밀번호가 너무 단순합니다. 다른 비밀번호를 입력해 주세요.',
       over_request_rate_limit: '요청이 많습니다. 잠시 후 다시 시도해 주세요.',
+      email_address_not_authorized:
+        '가입·초대 메일 발송 설정이 아직 준비되지 않았습니다. 관리자에게 문의해 주세요.',
+      over_email_send_rate_limit:
+        '메일 요청이 많습니다. 잠시 후 다시 시도해 주세요.',
     };
     const message = authMessages[String(error.code)];
     if (message) return message;
@@ -2261,6 +2270,9 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   const [runAnalysis, setRunAnalysis] = useState(true);
   const [busy, setBusy] = useState(false);
   const [analyzingFileId, setAnalyzingFileId] = useState<string | null>(null);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(
+    null,
+  );
 
   const effectiveInspectionId = inspectionId || props.inspections[0]?.id || '';
 
@@ -2398,6 +2410,22 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
           let message = '저장 완료';
           if (
             !controller.signal.aborted &&
+            ['image/jpeg', 'image/png'].includes(fileRow.mime_type || '')
+          ) {
+            try {
+              await saveInspectionPreview(
+                props.supabase,
+                fileRow,
+                item.file,
+                controller.signal,
+              );
+              message += ' · 미리보기 준비 완료';
+            } catch {
+              message += ' · 미리보기는 아래 목록에서 다시 준비할 수 있습니다.';
+            }
+          }
+          if (
+            !controller.signal.aborted &&
             runAnalysis &&
             kind === 'thermal_original' &&
             ['image/jpeg', 'image/png'].includes(fileRow.mime_type || '') &&
@@ -2443,11 +2471,15 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   }
 
   async function download(file: InspectionFile) {
-    const { data, error } = await props.supabase.storage
-      .from(file.storage_bucket)
-      .createSignedUrl(file.storage_path, 60);
-    if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-    else window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    if (downloadingFileId) return;
+    setDownloadingFileId(file.id);
+    try {
+      await downloadInspectionOriginal(props.supabase, file);
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
+    } finally {
+      setDownloadingFileId(null);
+    }
   }
 
   const inspectionLabel = (id: string) => {
@@ -2630,6 +2662,14 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  {['image/jpeg', 'image/png'].includes(
+                    file.mime_type || '',
+                  ) && (
+                    <InspectionPreviewButton
+                      client={props.supabase}
+                      source={file}
+                    />
+                  )}
                   {file.kind === 'thermal_original' &&
                     ['image/jpeg', 'image/png'].includes(
                       file.mime_type ?? '',
@@ -2642,6 +2682,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                           !props.canWrite || analyzingFileId === file.id
                         }
                         onClick={() => void retryAnalysis(file)}
+                        className="min-h-11 sm:min-h-7"
                       >
                         {analyzingFileId === file.id ? (
                           <Loader2 className="animate-spin" />
@@ -2655,9 +2696,13 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                     variant="outline"
                     size="sm"
                     onClick={() => void download(file)}
+                    className="min-h-11 sm:min-h-7"
+                    disabled={downloadingFileId !== null}
                   >
                     <Download />
-                    60초 다운로드
+                    {downloadingFileId === file.id
+                      ? '원본 준비 중…'
+                      : '원본 다운로드'}
                   </Button>
                 </div>
               </div>
@@ -4333,9 +4378,6 @@ function MembersView(
                 required
               />
             </Field>
-            <Field label="조직 식별자">
-              <Input value={props.workspace.organization.slug} disabled />
-            </Field>
             <Button
               type="submit"
               variant="outline"
@@ -4363,7 +4405,7 @@ function MembersView(
                       {profile?.display_name || '이름 미등록'}
                     </strong>
                     <p className="mt-1 text-xs text-slate-500">
-                      {profile?.email || member.user_id}
+                      {profile?.email || '이메일 확인 중'}
                     </p>
                   </div>
                   <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-48 sm:flex-row">
