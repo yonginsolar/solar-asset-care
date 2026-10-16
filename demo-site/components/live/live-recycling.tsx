@@ -19,6 +19,7 @@ import {
   certificateStatus,
 } from '@/lib/recycling-certificate';
 import { koreanDate } from '@/lib/operational-assessment';
+import { useFormDraftProtection } from '@/lib/use-form-draft-protection';
 
 type Certificate = Tables<'recycling_certificates'>;
 type Client = SupabaseClient<Database>;
@@ -75,6 +76,7 @@ export function RecyclingView({
     [plantFilter, setPlantFilter] = useState(''),
     [status, setStatus] = useState('');
   const [uploadId, setUploadId] = useState('');
+  const draft = useFormDraftProtection(saving);
   const fileInput = useRef<HTMLInputElement>(null);
   const requestSequence = useRef({ value: 0 });
   const refresh = useCallback(async () => {
@@ -139,6 +141,7 @@ export function RecyclingView({
     try {
       await requestFile(supabase, id, body);
       form.reset();
+      draft.markSaved();
       setUploadId('');
       setNotice(
         '등록했습니다. 파일을 내려받아 확인한 뒤 의뢰인에게 공개해 주세요.',
@@ -191,7 +194,13 @@ export function RecyclingView({
               먼저 발전소를 등록해 주세요.
             </p>
           ) : (
-            <form onSubmit={upload} className="mt-4 grid gap-4 sm:grid-cols-2">
+            <form
+              ref={draft.ref}
+              onInput={draft.onInput}
+              onChange={draft.onChange}
+              onSubmit={upload}
+              className="mt-4 grid gap-4 sm:grid-cols-2"
+            >
               <fieldset disabled={saving} className="contents">
                 <label className={fieldClass}>
                   발전소

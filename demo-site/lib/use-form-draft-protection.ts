@@ -1,26 +1,22 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useDraftProtection } from './use-draft-protection';
+import { formDraftFingerprint } from './form-draft';
 
 /** Memory-only guard for named, uncontrolled text/number/select inputs. No autosave. */
 export function useFormDraftProtection(busy: boolean) {
   const ref = useRef<HTMLFormElement>(null);
   const baseline = useRef<string | null>(null);
+  const saved = useRef(false);
   const [dirty, setDirty] = useState(false);
   function signature() {
-    return ref.current
-      ? JSON.stringify(
-          Array.from(new FormData(ref.current), ([k, v]) => [
-            k,
-            typeof v === 'string' ? v : v.name,
-          ]),
-        )
-      : '';
+    return ref.current ? formDraftFingerprint(ref.current) : '';
   }
   function update() {
     if (busy || !ref.current) return;
     const value = signature();
-    baseline.current ??= value;
+    if (baseline.current === null || saved.current) baseline.current = value;
+    saved.current = false;
     setDirty(value !== baseline.current);
   }
   useEffect(update);
@@ -30,8 +26,8 @@ export function useFormDraftProtection(busy: boolean) {
     onInput: update,
     onChange: update,
     markSaved() {
-      baseline.current = signature();
-      setDirty(false);
+      saved.current = true;
+      if (!busy) update();
     },
   };
 }

@@ -243,6 +243,33 @@ try {
     p_scheduled_at: scheduled,
     p_due_at: due,
   });
+  const auditColumns =
+    'id,occurred_at,action,entity_type,entity_id,actor_user_id';
+  check(
+    (
+      await required(
+        owner.client
+          .from('audit_events')
+          .select(auditColumns)
+          .eq('organization_id', organization.id)
+          .limit(100),
+      )
+    ).length > 0,
+    'administrator reads existing minimal audit columns',
+  );
+  for (const actor of [expert, client, otherOwner])
+    check(
+      (
+        await required(
+          actor.client
+            .from('audit_events')
+            .select(auditColumns)
+            .eq('organization_id', organization.id)
+            .limit(100),
+        )
+      ).length === 0,
+      'expert/customer/foreign owner cannot read administrator audit events',
+    );
   const scheduled = await required(
     owner.client.rpc(
       'update_inspection_schedule',

@@ -94,6 +94,8 @@ import {
   manualInspectionStatuses,
 } from '@/lib/inspection-workflow';
 import { draftNavigationState } from '@/lib/draft-navigation';
+import { useWorkspaceLocation } from '@/lib/use-workspace-location';
+import { roleViews, type WorkspaceView } from '@/lib/workspace-navigation';
 import {
   InspectionSelectionProvider,
   useInspectionSelection,
@@ -133,24 +135,7 @@ type Workspace = {
   superAdminUserId: string | null;
 };
 
-type View =
-  | 'dashboard'
-  | 'plants'
-  | 'inspections'
-  | 'files'
-  | 'report-images'
-  | 'recycling'
-  | 'findings'
-  | 'assessments'
-  | 'calculation-settings'
-  | 'reports'
-  | 'maintenance'
-  | 'partners'
-  | 'members'
-  | 'service-settings'
-  | 'customers'
-  | 'audit'
-  | 'account';
+type View = WorkspaceView;
 
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
@@ -263,33 +248,6 @@ const navItems: Array<{
   { id: 'audit', label: '운영 이력', icon: FileCheck2 },
   { id: 'account', label: '내 계정', icon: KeyRound },
 ];
-
-const roleViews: Record<string, View[]> = {
-  owner: navItems.map((item) => item.id),
-  expert: [
-    'dashboard',
-    'plants',
-    'inspections',
-    'files',
-    'report-images',
-    'findings',
-    'assessments',
-    'reports',
-    'maintenance',
-    'recycling',
-    'account',
-  ],
-  client: [
-    'dashboard',
-    'plants',
-    'inspections',
-    'reports',
-    'maintenance',
-    'partners',
-    'recycling',
-    'account',
-  ],
-};
 
 function errorMessage(error: unknown) {
   if (typeof error === 'object' && error && 'code' in error) {
@@ -1278,8 +1236,17 @@ function AdminConsole({
   initialWorkspace: Workspace;
 }) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
-  const [view, setView] = useState<View>('dashboard');
-  const [selectedInspection, setSelectedInspection] = useState('');
+  const [notice, setNotice] = useState<Notice>(null);
+  const navigation = useWorkspaceLocation(
+    initialWorkspace.membership.role,
+    () =>
+      setNotice({
+        tone: 'info',
+        text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.',
+      }),
+  );
+  const view = navigation.view;
+  const selectedInspection = navigation.inspectionId;
   type Destination = View | 'refresh' | 'logout' | `inspection:${string}`;
   const [pendingNavigation, setPendingNavigation] =
     useState<Destination | null>(null);
@@ -1288,8 +1255,9 @@ function AdminConsole({
     if (next === 'refresh') void refresh();
     else if (next === 'logout') void supabase.auth.signOut();
     else if (next.startsWith('inspection:'))
-      setSelectedInspection(next.slice(11));
-    else setView(next as View);
+      navigation.go({ view, inspectionId: next.slice(11) });
+    else
+      navigation.go({ view: next as View, inspectionId: selectedInspection });
   };
   const requestNavigation = (next: Destination) => {
     if (next === view) return;
@@ -1330,7 +1298,6 @@ function AdminConsole({
   });
   const currentView = useRef(view);
   currentView.current = view;
-  const [notice, setNotice] = useState<Notice>(null);
 
   const organizationId = workspace.organization.id;
   const role = workspace.membership.role;
@@ -1597,13 +1564,32 @@ function AdminConsole({
   }, [organizationId, supabase, view, role]);
 
   useEffect(() => {
+    if (!navigation.ready) return;
     const timer = window.setTimeout(() => void refresh(), 0);
     return () => {
       window.clearTimeout(timer);
       readRequest.current.sequence++;
       readRequest.current.controller?.abort();
     };
-  }, [refresh]);
+  }, [refresh, navigation.ready]);
+
+  useEffect(() => {
+    if (
+      navigation.ready &&
+      loadedView === view &&
+      workspaceCollections(view, role).includes('inspections')
+    )
+      navigation.replaceInspection(
+        resolveInspectionSelection(selectedInspection, inspections),
+      );
+  }, [
+    navigation.ready,
+    loadedView,
+    view,
+    role,
+    selectedInspection,
+    inspections,
+  ]);
 
   const shared = {
     supabase,
@@ -1646,9 +1632,12 @@ function AdminConsole({
     >
       <div className="min-h-screen bg-[#f2f5f6] text-slate-900">
         <AlertDialog
-          open={pendingNavigation !== null}
+          open={pendingNavigation !== null || navigation.pending !== null}
           onOpenChange={(open) => {
-            if (!open) setPendingNavigation(null);
+            if (!open) {
+              setPendingNavigation(null);
+              navigation.cancelHistory();
+            }
           }}
         >
           <AlertDialogContent>
@@ -1665,6 +1654,10 @@ function AdminConsole({
               <AlertDialogCancel>이어서 작성</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
+                  if (navigation.pending) {
+                    navigation.confirmHistory();
+                    return;
+                  }
                   if (pendingNavigation) {
                     if (draftNavigationState(window) === 'busy')
                       setNotice({
@@ -1897,7 +1890,7 @@ function AdminConsole({
                       inspections,
                     )}
                     {...shared}
-                    canWrite={canUpload && !selectedLocked}
+                    canWrite={canUpload}
                   />
                 )}
                 {view === 'report-images' && canUpload && (
@@ -3337,6 +3330,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   const uploadController = useRef<AbortController | null>(null);
   useEffect(() => () => uploadController.current?.abort(), []);
   const [runAnalysis, setRunAnalysis] = useState(true);
+  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [analyzingFileId, setAnalyzingFileId] = useState<string | null>(null);
   useDraftProtection(
@@ -3348,6 +3342,23 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   );
 
   const effectiveInspectionId = inspectionId || props.inspections[0]?.id || '';
+  const currentInspection = props.inspections.find(
+    (i) => i.id === effectiveInspectionId,
+  );
+  const canEditSelected =
+    props.canWrite &&
+    Boolean(currentInspection) &&
+    !inspectionLocked(currentInspection?.status);
+  const visibleFiles = inspectionRows(
+    props.files,
+    effectiveInspectionId,
+    showAll,
+  );
+  const canAnalyze = (file: InspectionFile) =>
+    props.canWrite &&
+    props.inspections.some(
+      (i) => i.id === file.inspection_id && !inspectionLocked(i.status),
+    );
 
   const hasSuccessfulAnalysis = (fileId: string) =>
     props.analysisRuns.some((run) => {
@@ -3426,6 +3437,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   }
 
   async function retryAnalysis(fileRow: InspectionFile) {
+    if (busy || analyzingFileId || !canAnalyze(fileRow)) return;
     setAnalyzingFileId(fileRow.id);
     props.setNotice({ tone: 'info', text: '저장된 원본을 다시 분석합니다.' });
     try {
@@ -3453,7 +3465,14 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
 
   async function upload(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !effectiveInspectionId || !queue.length) return;
+    if (
+      busy ||
+      analyzingFileId ||
+      !canEditSelected ||
+      !effectiveInspectionId ||
+      !queue.length
+    )
+      return;
     const controller = new AbortController();
     uploadController.current = controller;
     setBusy(true);
@@ -3573,6 +3592,12 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
         >
           <h2 className="font-bold">점검 파일 저장</h2>
           {!props.canWrite && <ReadOnlyNote />}
+          {props.canWrite && !canEditSelected && (
+            <p className="text-sm text-amber-800">
+              이 점검은 종료·취소되어 조회만 가능합니다. 다른 점검을 선택하거나
+              관리자가 점검을 재개해 주세요.
+            </p>
+          )}
           <Field label="연결할 점검">
             <select
               className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
@@ -3581,7 +3606,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                 if (!setInspectionId(e.target.value)) return;
                 setQueue([]);
               }}
-              disabled={!props.canWrite || busy || queue.length > 0}
+              disabled={busy || Boolean(analyzingFileId) || queue.length > 0}
             >
               {props.inspections.map((inspection) => (
                 <option key={inspection.id} value={inspection.id}>
@@ -3595,7 +3620,12 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
               value={kind}
               onChange={(e) => setKind(e.target.value as typeof kind)}
-              disabled={!props.canWrite || busy || queue.length > 0}
+              disabled={
+                !canEditSelected ||
+                busy ||
+                Boolean(analyzingFileId) ||
+                queue.length > 0
+              }
             >
               <option value="thermal_original">열화상 원본</option>
               <option value="visible_original">가시광 원본</option>
@@ -3618,7 +3648,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               type="file"
               accept="image/jpeg,image/png,image/tiff,.tif,.tiff"
               multiple
-              disabled={!props.canWrite || busy}
+              disabled={!canEditSelected || busy || Boolean(analyzingFileId)}
               onChange={(e) => {
                 const selected = Array.from(e.target.files || []);
                 if (selected.length > 20)
@@ -3687,6 +3717,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                 type="checkbox"
                 className="mt-1"
                 checked={runAnalysis}
+                disabled={!canEditSelected || busy || Boolean(analyzingFileId)}
                 onChange={(e) => setRunAnalysis(e.target.checked)}
               />
               JPG·PNG이면 저장 직후 색상 분포 기반 상대 분석 후보도 만듭니다.
@@ -3697,7 +3728,8 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
             type="submit"
             className="w-full"
             disabled={
-              !props.canWrite ||
+              !canEditSelected ||
+              Boolean(analyzingFileId) ||
               !effectiveInspectionId ||
               !queue.some((item) => item.status !== 'done') ||
               busy
@@ -3710,10 +3742,21 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
         </form>
         <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
           <div className="border-b px-5 py-4">
-            <h2 className="font-bold">저장 파일 {props.files.length}개</h2>
+            <h2 className="font-bold">
+              {showAll ? '전체 점검' : '현재 점검'} 저장 파일{' '}
+              {visibleFiles.length}개
+            </h2>
+            <label className="mt-2 flex min-h-11 items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={showAll}
+                onChange={(e) => setShowAll(e.target.checked)}
+              />
+              전체 점검 파일 보기
+            </label>
           </div>
           <div className="divide-y">
-            {props.files.map((file) => (
+            {visibleFiles.map((file) => (
               <div
                 key={file.id}
                 className="flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center"
@@ -3752,7 +3795,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                         variant="outline"
                         size="sm"
                         disabled={
-                          !props.canWrite || analyzingFileId === file.id
+                          !canAnalyze(file) || busy || analyzingFileId !== null
                         }
                         onClick={() => void retryAnalysis(file)}
                         className="min-h-11 sm:min-h-7"
@@ -3780,7 +3823,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                 </div>
               </div>
             ))}
-            {props.files.length === 0 && (
+            {visibleFiles.length === 0 && (
               <p className="px-5 py-16 text-center text-sm text-slate-400">
                 저장된 원본 파일이 없습니다.
               </p>

@@ -4,26 +4,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/supabase/database.types';
 import { Button } from '@/components/ui/button';
 import { problem } from '@/lib/service-access';
-type EventRow = {
-  id: number;
-  occurred_at: string;
-  action: string;
-  entity_type: string;
-  actor_user_id: string | null;
-};
-const actions: Record<string, string> = {
-  'settings.save': '운영 설정 초안 저장',
-  'settings.publish': '새 약관 적용',
-  'customers.create': '고객 등록',
-  'customers.link_contact': '고객 담당자 연결',
-  'customers.unlink_contact': '고객 담당자 연결 해제',
-  'customers.link_plant': '고객 발전소 연결',
-  'customers.unlink_plant': '고객 발전소 연결 해제',
-  'account.profile_completed': '기본정보·동의 처리',
-  'organization.member_removed': '관리자 접근권한 해제',
-  'organization.super_admin_transferred': '최고관리자 양도',
-  'organization.member_updated': '계정 역할·상태 변경',
-};
+import {
+  auditLabels,
+  type AuditContext,
+  type AuditEntry,
+} from '@/lib/audit-display';
+import { loadAuditContext } from '@/lib/audit-context';
 export function AuditView({
   supabase,
   organizationId,
@@ -31,7 +17,12 @@ export function AuditView({
   supabase: SupabaseClient<Database>;
   organizationId: string;
 }) {
-  const [rows, setRows] = useState<EventRow[]>([]);
+  const [rows, setRows] = useState<AuditEntry[]>([]);
+  const [context, setContext] = useState<AuditContext>({
+    actors: {},
+    targets: {},
+    partial: false,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
@@ -43,12 +34,12 @@ export function AuditView({
     setError('');
     void supabase
       .from('audit_events')
-      .select('id,occurred_at,action,entity_type,actor_user_id')
+      .select('id,occurred_at,action,entity_type,entity_id,actor_user_id')
       .eq('organization_id', organizationId)
       .order('occurred_at', { ascending: false })
       .limit(100)
       .abortSignal(c.signal)
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (!current) return;
         if (error)
           setError(
@@ -56,8 +47,17 @@ export function AuditView({
               ? '조회가 지연됩니다. 다시 불러와 주세요.'
               : problem(error),
           );
-        else setRows(data ?? []);
-        setLoading(false);
+        else {
+          setRows(data ?? []);
+          const labels = await loadAuditContext(
+            supabase,
+            organizationId,
+            data ?? [],
+            c.signal,
+          );
+          if (current) setContext(labels);
+        }
+        if (current) setLoading(false);
       });
     return () => {
       current = false;
@@ -91,6 +91,12 @@ export function AuditView({
           {error}
         </p>
       )}
+      {!loading && context.partial && (
+        <p role="status" className="mb-4 text-sm text-amber-800">
+          일부 항목 이름을 불러오지 못해 기록번호로 표시합니다. 다시 불러올 수
+          있습니다.
+        </p>
+      )}
       <div className="divide-y rounded-2xl border bg-white px-5">
         {loading ? (
           <p role="status" className="py-8 text-sm text-slate-500">
@@ -99,27 +105,35 @@ export function AuditView({
         ) : rows.length === 0 ? (
           <p className="py-8 text-sm text-slate-500">표시할 이력이 없습니다.</p>
         ) : (
-          rows.map((row) => (
-            <article
-              key={row.id}
-              className="flex flex-wrap items-center justify-between gap-3 py-4"
-            >
-              <div>
-                <h2 className="text-sm font-semibold">
-                  {actions[row.action] ?? row.action}
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">{row.entity_type}</p>
-              </div>
-              <time
-                className="text-xs text-slate-500"
-                dateTime={row.occurred_at}
+          rows.map((row) => {
+            const labels = auditLabels(row, context);
+            return (
+              <article
+                key={row.id}
+                className="flex flex-wrap items-center justify-between gap-3 py-4"
               >
-                {new Date(row.occurred_at).toLocaleString('ko-KR', {
-                  timeZone: 'Asia/Seoul',
-                })}
-              </time>
-            </article>
-          ))
+                <div>
+                  <h2 className="break-words text-sm font-semibold">
+                    {labels.action}
+                  </h2>
+                  <p className="mt-1 break-words text-sm text-slate-600">
+                    {labels.target}
+                  </p>
+                  <p className="mt-1 break-words text-xs text-slate-500">
+                    작업자: {labels.actor}
+                  </p>
+                </div>
+                <time
+                  className="text-xs text-slate-500"
+                  dateTime={row.occurred_at}
+                >
+                  {new Date(row.occurred_at).toLocaleString('ko-KR', {
+                    timeZone: 'Asia/Seoul',
+                  })}
+                </time>
+              </article>
+            );
+          })
         )}
       </div>
     </section>

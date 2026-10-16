@@ -146,6 +146,7 @@ function SettingsForm(
 ) {
   const initial = props.initial?.values as Settings | undefined;
   const [busy, setBusy] = useState(false);
+  const draft = useFormDraftProtection(busy);
   async function submit(e: SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
@@ -182,68 +183,76 @@ function SettingsForm(
     }
   }
   return (
-    <form onSubmit={submit} className={`${cardStyle} space-y-5`}>
-      <h2 className="font-bold">
-        {props.initial ? '새 판본 등록' : '첫 계산 기준 등록'}
-      </h2>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {settingFields.map(([k, label, min, max, suggested]) => (
-          <Field key={k} label={label}>
+    <form
+      ref={draft.ref}
+      onInput={draft.onInput}
+      onChange={draft.onChange}
+      onSubmit={submit}
+      className={`${cardStyle} space-y-5`}
+    >
+      <fieldset disabled={busy} className="min-w-0 space-y-5">
+        <h2 className="font-bold">
+          {props.initial ? '새 판본 등록' : '첫 계산 기준 등록'}
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {settingFields.map(([k, label, min, max, suggested]) => (
+            <Field key={k} label={label}>
+              <Input
+                name={k}
+                type="number"
+                required
+                min={min}
+                max={max}
+                step="any"
+                defaultValue={initial?.[k] ?? suggested}
+              />
+            </Field>
+          ))}
+        </div>
+        <h3 className="font-semibold">이상 유형별 개선가능비율</h3>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {Object.entries(improvementLabels).map(([key, label], index) => (
+            <Field key={key} label={`${label} (%)`}>
+              <Input
+                name={`rate_${key}`}
+                type="number"
+                required
+                min="0"
+                max="100"
+                step="any"
+                defaultValue={
+                  initial
+                    ? initial.improvementRates[
+                        key as keyof typeof improvementLabels
+                      ] * 100
+                    : [90, 95, 100, 70, 40][index]
+                }
+              />
+            </Field>
+          ))}
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="적용 시작일">
             <Input
-              name={k}
-              type="number"
+              name="effectiveFrom"
+              type="date"
               required
-              min={min}
-              max={max}
-              step="any"
-              defaultValue={initial?.[k] ?? suggested}
+              defaultValue={koreanDate()}
             />
           </Field>
-        ))}
-      </div>
-      <h3 className="font-semibold">이상 유형별 개선가능비율</h3>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {Object.entries(improvementLabels).map(([key, label], index) => (
-          <Field key={key} label={`${label} (%)`}>
-            <Input
-              name={`rate_${key}`}
-              type="number"
+          <Field label="변경 사유·단가 출처">
+            <Textarea
+              name="reason"
               required
-              min="0"
-              max="100"
-              step="any"
-              defaultValue={
-                initial
-                  ? initial.improvementRates[
-                      key as keyof typeof improvementLabels
-                    ] * 100
-                  : [90, 95, 100, 70, 40][index]
-              }
+              maxLength={1000}
+              placeholder="기준을 정한 근거와 단가 출처"
             />
           </Field>
-        ))}
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="적용 시작일">
-          <Input
-            name="effectiveFrom"
-            type="date"
-            required
-            defaultValue={koreanDate()}
-          />
-        </Field>
-        <Field label="변경 사유·단가 출처">
-          <Textarea
-            name="reason"
-            required
-            maxLength={1000}
-            placeholder="기준을 정한 근거와 단가 출처"
-          />
-        </Field>
-      </div>
-      <Button type="submit" disabled={busy}>
-        {busy ? '저장 중…' : '새 기준 저장'}
-      </Button>
+        </div>
+        <Button type="submit" disabled={busy}>
+          {busy ? '저장 중…' : '새 기준 저장'}
+        </Button>
+      </fieldset>
     </form>
   );
 }
