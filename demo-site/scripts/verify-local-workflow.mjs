@@ -86,7 +86,16 @@ try {
     join(root, 'supabase/tests/workflow_integrity.sql'),
     'utf8',
   );
-  sql(progressive.replace('rollback;', workflow + '\nrollback;'));
+  const schedule = readFileSync(
+    join(root, 'supabase/tests/user_journey_schedule.sql'),
+    'utf8',
+  );
+  sql(
+    progressive.replace(
+      'rollback;',
+      workflow + '\n' + schedule + '\nrollback;',
+    ),
+  );
   checks++;
   console.log(
     'PASS all migrations + service access + progressive diagnosis + workflow integrity SQL assertions',

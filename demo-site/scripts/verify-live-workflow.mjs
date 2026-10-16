@@ -19,6 +19,23 @@ if (process.env.SOLAR_UI_ACCEPTANCE === '1' && !process.stdin.isTTY)
   throw new Error(
     'Interactive UI testing needs a retained terminal with tty:true so cleanup can be resumed.',
   );
+let uiPassword;
+if (process.env.SOLAR_UI_ACCEPTANCE === '1') {
+  execFileSync('stty', ['-echo'], { stdio: 'inherit' });
+  try {
+    console.log('Ready for hidden UI test configuration JSON on stdin.');
+    const input = await new Promise((resolve) =>
+      process.stdin.once('data', resolve),
+    );
+    uiPassword = JSON.parse(input.toString()).password;
+    assert.ok(
+      typeof uiPassword === 'string' && uiPassword.length > 16,
+      'Strong test-only password required',
+    );
+  } finally {
+    execFileSync('stty', ['echo'], { stdio: 'inherit' });
+  }
+}
 const env = Object.fromEntries(
   readFileSync(new URL('../.env.local', import.meta.url), 'utf8')
     .split('\n')
@@ -73,7 +90,7 @@ async function required(p) {
   return r.data;
 }
 async function user() {
-  const password = `T-${randomUUID()}-9a!`;
+  const password = uiPassword ?? `T-${randomUUID()}-9a!`;
   const email = `acceptance-${randomUUID()}@example.invalid`;
   const data = await required(
     admin.auth.admin.createUser({ email, password, email_confirm: true }),
@@ -219,6 +236,75 @@ try {
       })
       .select('*')
       .single(),
+  );
+  const scheduleArgs = (revision, scheduled = null, due = null) => ({
+    p_inspection_id: inspection.id,
+    p_expected_updated_at: revision,
+    p_scheduled_at: scheduled,
+    p_due_at: due,
+  });
+  const scheduled = await required(
+    owner.client.rpc(
+      'update_inspection_schedule',
+      scheduleArgs(
+        inspection.updated_at,
+        '2026-10-20T01:30:00Z',
+        '2026-10-21T09:00:00Z',
+      ),
+    ),
+  );
+  check(
+    Date.parse(scheduled.scheduled_at) === Date.parse('2026-10-20T01:30:00Z') &&
+      scheduled.status === inspection.status,
+    'admin schedules an existing request without changing its workflow state',
+  );
+  for (const actor of [expert, client, otherOwner])
+    check(
+      Boolean(
+        (
+          await actor.client.rpc(
+            'update_inspection_schedule',
+            scheduleArgs(scheduled.updated_at),
+          )
+        ).error,
+      ),
+      'expert/customer/foreign owner cannot edit inspection schedule',
+    );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc(
+          'update_inspection_schedule',
+          scheduleArgs(inspection.updated_at),
+        )
+      ).error,
+    ),
+    'stale real-Auth schedule update is rejected',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc(
+          'update_inspection_schedule',
+          scheduleArgs(
+            scheduled.updated_at,
+            '2026-10-22T00:00Z',
+            '2026-10-21T00:00Z',
+          ),
+        )
+      ).error,
+    ),
+    'schedule date order is checked on the server',
+  );
+  await required(
+    owner.client.rpc(
+      'update_inspection_schedule',
+      scheduleArgs(scheduled.updated_at),
+    ),
+  );
+  check(
+    true,
+    'optional schedules can be cleared without replacing the inspection',
   );
   const partnerProfile = (overrides = {}) => ({
     p_organization_id: organization.id,
@@ -1312,6 +1398,17 @@ try {
   check(
     Boolean(
       (
+        await owner.client.rpc(
+          'update_inspection_schedule',
+          scheduleArgs(closed.updated_at, '2026-10-20T00:00Z'),
+        )
+      ).error,
+    ),
+    'closed inspection schedule remains locked for administrators',
+  );
+  check(
+    Boolean(
+      (
         await expert.client.rpc('reopen_inspection', {
           p_inspection_id: inspection.id,
           p_expected_updated_at: closed.updated_at,
@@ -1693,6 +1790,59 @@ try {
   );
   certificate = corrected;
   if (process.env.SOLAR_UI_ACCEPTANCE === '1') {
+    const uiWork = await required(
+      owner.client
+        .from('maintenance_requests')
+        .insert({
+          organization_id: organization.id,
+          inspection_id: inspection.id,
+          title: '[가상 UI] 완료된 조치',
+          created_by: owner.id,
+        })
+        .select()
+        .single(),
+    );
+    const uiRequest = await required(
+      owner.client.rpc('create_quote_request_with_partners', {
+        p_plant_id: plant.id,
+        p_requester_user_id: client.id,
+        p_title: '[가상 UI] 완료된 조치의 견적',
+        p_scope_summary: '실제 발주 없는 UI 검수',
+        p_response_due_at: null,
+        p_partner_ids: partnerIds,
+        p_inspection_id: inspection.id,
+        p_maintenance_request_id: uiWork.id,
+        p_commission_rate: 0,
+      }),
+    );
+    const uiQuotes = await required(
+      owner.client
+        .from('partner_quotes')
+        .select('id')
+        .eq('quote_request_id', uiRequest.id),
+    );
+    for (const [index, q] of uiQuotes.entries())
+      await required(
+        owner.client.rpc('record_partner_quote_response', {
+          p_quote_id: q.id,
+          p_amount_krw: 100000 + index * 10000,
+          p_estimated_days: 1 + index,
+          p_proposed_start_on: null,
+          p_valid_until: null,
+          p_scope: '가상 작업',
+          p_conditions: '실제 계약 아님',
+          p_commission_rate: 0,
+        }),
+      );
+    await required(
+      client.client.rpc('select_partner_quote', { p_quote_id: uiQuotes[0].id }),
+    );
+    await required(
+      owner.client
+        .from('maintenance_requests')
+        .update({ status: 'completed' })
+        .eq('id', uiWork.id),
+    );
     await required(
       owner.client.rpc('review_recycling_certificate', {
         ...reviewArgs,
@@ -1702,9 +1852,11 @@ try {
     console.log(
       'UI_TEST_READY ' +
         JSON.stringify({
-          owner: { email: owner.email, password: owner.password },
-          expert: { email: expert.email, password: expert.password },
-          client: { email: client.email, password: client.password },
+          owner: { email: owner.email },
+          expert: { email: expert.email },
+          client: { email: client.email },
+          organizationId: organization.id,
+          completedQuoteRequestId: uiRequest.id,
           plantId: plant.id,
           inspectionId: inspection.id,
           certificateId,
@@ -1721,6 +1873,7 @@ try {
         resolve();
       });
     });
+    process.stdin.pause();
     // Browser logout revokes that actor's Auth session. Renew this test's
     // clients so the final withdrawal checks prove authorization, not merely 401.
     for (const actor of users) {
@@ -1901,6 +2054,7 @@ try {
       }
     for (const table of [
       'recycling_certificates',
+      'maintenance_requests',
       'partner_quotes',
       'quote_requests',
       'partners',
@@ -1910,7 +2064,6 @@ try {
       'analysis_runs',
       'inspection_assessments',
       'inspection_files',
-      'maintenance_requests',
       'inspections',
     ]) {
       const r = await admin

@@ -58,6 +58,26 @@ export type Onboarding = {
   }>;
   customers: Array<{ name: string; kind: CustomerKind }>;
 };
+/** Compare editable values, not JSON key presence/order. Empty optional fields
+ * render identically whether the stored profile omitted them or returned null.
+ * Retain nonempty hidden business drafts so switching tabs cannot discard them. */
+export function accountDetailsFingerprint(
+  details: AccountDetails,
+  client: boolean,
+) {
+  return JSON.stringify([
+    details.name.trim(),
+    details.phone.replace(/\D/g, ''),
+    ...(client
+      ? [
+          details.kind ?? 'individual',
+          (details.business_name ?? '').trim(),
+          (details.business_number ?? '').replace(/\D/g, ''),
+          (details.representative ?? '').trim(),
+        ]
+      : []),
+  ]);
+}
 export function businessNumberValid(input: string) {
   const n = input.replace(/\D/g, '');
   if (!/^\d{10}$/.test(n)) return false;

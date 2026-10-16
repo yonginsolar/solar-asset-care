@@ -1415,6 +1415,15 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      update_inspection_schedule: {
+        Args: {
+          p_inspection_id: string;
+          p_expected_updated_at: string;
+          p_scheduled_at: string | null;
+          p_due_at: string | null;
+        };
+        Returns: Database['public']['Tables']['inspections']['Row'];
+      };
       reopen_inspection: {
         Args: {
           p_inspection_id: string;

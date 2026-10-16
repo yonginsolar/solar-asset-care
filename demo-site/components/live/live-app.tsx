@@ -84,6 +84,8 @@ import {
 } from '@/lib/inspection-preview';
 import { InspectionPreviewButton } from './inspection-preview';
 import { AccountProfile } from './live-profile';
+import { InspectionScheduleEditor } from './live-inspection-schedule';
+import { quoteSelectionLock } from '@/lib/quote-selection';
 import { useDraftProtection } from '@/lib/use-draft-protection';
 import { useSectionDraftProtection } from '@/lib/use-section-draft-protection';
 import {
@@ -1837,7 +1839,7 @@ function AdminConsole({
                   ].includes(view) &&
                   currentInspection && (
                     <InspectionReopen
-                    key={`reopen-${currentInspection.id}`}
+                      key={`reopen-${currentInspection.id}`}
                       {...shared}
                       inspection={currentInspection}
                       canReopen={isOwner}
@@ -2880,6 +2882,9 @@ function InspectionsView(
   const [expertId, setExpertId] = useState('');
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState(false);
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(
+    null,
+  );
   const rowLock = useRef(false);
 
   const effectivePlantId = plantId || props.plants[0]?.id || '';
@@ -3026,7 +3031,10 @@ function InspectionsView(
             onSubmit={create}
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
-            <fieldset disabled={busy} className="space-y-4">
+            <fieldset
+              disabled={busy || rowBusy || Boolean(editingScheduleId)}
+              className="space-y-4"
+            >
               <h2 className="font-bold">
                 {props.requesterMode ? '새 점검 요청' : '새 점검 접수'}
               </h2>
@@ -3170,6 +3178,7 @@ function InspectionsView(
                         disabled={
                           !props.canUpdate ||
                           rowBusy ||
+                          Boolean(editingScheduleId) ||
                           inspectionLocked(inspection.status)
                         }
                         aria-label="담당 전문가"
@@ -3191,6 +3200,7 @@ function InspectionsView(
                         disabled={
                           busy ||
                           rowBusy ||
+                          Boolean(editingScheduleId) ||
                           !availableStatuses.length ||
                           inspectionLocked(inspection.status)
                         }
@@ -3219,6 +3229,41 @@ function InspectionsView(
                     )}
                   </div>
                 </div>
+                {props.canUpdate &&
+                  !props.requesterMode &&
+                  !props.expertMode &&
+                  !inspectionLocked(inspection.status) &&
+                  (editingScheduleId === inspection.id ? (
+                    <InspectionScheduleEditor
+                      key={inspection.id}
+                      inspection={inspection}
+                      supabase={props.supabase}
+                      onClose={() => setEditingScheduleId(null)}
+                      onPending={(pending) => {
+                        rowLock.current = pending;
+                        setRowBusy(pending);
+                      }}
+                      onSaved={async () => {
+                        props.setNotice({
+                          tone: 'success',
+                          text: '점검 일정을 저장했습니다.',
+                        });
+                        await props.refresh();
+                      }}
+                    />
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-3"
+                      disabled={busy || rowBusy || Boolean(editingScheduleId)}
+                      aria-label={`${inspection.inspection_code} 일정 수정`}
+                      onClick={() => setEditingScheduleId(inspection.id)}
+                    >
+                      일정 수정
+                    </Button>
+                  ))}
                 {inspection.notes && (
                   <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
                     {inspection.notes}
@@ -4663,6 +4708,11 @@ function PartnerQuotesView(
         />
         <section className="space-y-5">
           {props.quoteRequests.map((request) => {
+            const selectionLock = quoteSelectionLock(
+              request,
+              props.maintenance,
+              props.session.user.id,
+            );
             const quotes = props.partnerQuotes.filter(
               (quote) => quote.quote_request_id === request.id,
             );
@@ -4689,6 +4739,11 @@ function PartnerQuotesView(
                     {request.request_code}
                   </span>
                 </div>
+                {selectionLock && (
+                  <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+                    {selectionLock}
+                  </p>
+                )}
                 {quotes.length > 0 ? (
                   <div className="mt-4 grid gap-3 lg:grid-cols-3">
                     {quotes.map((quote) => {
@@ -4735,7 +4790,16 @@ function PartnerQuotesView(
                             className="mt-4 w-full"
                             size="sm"
                             variant={selected ? 'outline' : 'default'}
-                            disabled={selected || selectingQuoteId !== null}
+                            disabled={
+                              selected ||
+                              Boolean(selectionLock) ||
+                              selectingQuoteId !== null ||
+                              ![
+                                'submitted',
+                                'selected',
+                                'not_selected',
+                              ].includes(quote.status)
+                            }
                             onClick={() => void selectQuote(quote.id)}
                           >
                             {selectingQuoteId === quote.id ? (
@@ -4743,7 +4807,11 @@ function PartnerQuotesView(
                             ) : (
                               <CheckCircle2 />
                             )}
-                            {selected ? '선택한 업체' : '이 업체 선택'}
+                            {selected
+                              ? '선택한 업체'
+                              : selectionLock
+                                ? '업체 변경 불가'
+                                : '이 업체 선택'}
                           </Button>
                         </div>
                       );

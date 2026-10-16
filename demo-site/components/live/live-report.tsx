@@ -22,6 +22,8 @@ import type {
 } from '@/lib/operational-assessment';
 import { defectLabels, kindLabels, severityLabels } from '@/lib/finding-labels';
 import { requestReportPdf } from '@/lib/report-download';
+import { parseAccountState } from '@/lib/account-access';
+import { portalForRole, portalPath, portalTitle } from '@/lib/portal';
 import { EconomicChart, ReportPhoto } from './report-visuals';
 import type { ReportImage } from '@/lib/report-visuals';
 
@@ -64,6 +66,11 @@ export function LiveReport({ reportId }: { reportId: string }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [workspaceRole, setWorkspaceRole] = useState<string | null>(null);
+  const backPath = workspaceRole ? portalPath(workspaceRole) : '/login';
+  const backLabel = workspaceRole
+    ? portalTitle(workspaceRole)
+    : '로그인으로 이동';
   async function downloadPdf() {
     if (!supabase || !data || downloading) return;
     setDownloading(true);
@@ -85,6 +92,7 @@ export function LiveReport({ reportId }: { reportId: string }) {
 
   useEffect(() => {
     async function load() {
+      setWorkspaceRole(null);
       if (!supabase) {
         setError('보고서를 불러올 수 없습니다. 관리자에게 문의해 주세요.');
         setLoading(false);
@@ -95,6 +103,31 @@ export function LiveReport({ reportId }: { reportId: string }) {
         setError('보고서를 보려면 먼저 로그인해 주세요.');
         setLoading(false);
         return;
+      }
+      // Read the current server-managed membership, never user-editable metadata.
+      // A failed/removed/incomplete account falls back to login, not the admin route.
+      const accountResult = await supabase.rpc('get_my_account_state');
+      if (!accountResult.error) {
+        try {
+          const account = parseAccountState(accountResult.data);
+          if (
+            account.organizationId &&
+            !account.accessRemoved &&
+            !account.needsInitialPassword
+          ) {
+            const member = await supabase
+              .from('organization_members')
+              .select('role')
+              .eq('organization_id', account.organizationId)
+              .eq('user_id', sessionData.session.user.id)
+              .eq('status', 'active')
+              .maybeSingle();
+            if (!member.error && member.data && portalForRole(member.data.role))
+              setWorkspaceRole(member.data.role);
+          }
+        } catch {
+          /* Keep the safe login fallback if the account response is invalid. */
+        }
       }
       try {
         const { data: report, error: reportError } = await supabase
@@ -229,9 +262,12 @@ export function LiveReport({ reportId }: { reportId: string }) {
             보고서를 표시할 수 없습니다
           </h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">{error}</p>
-          <Link href="/admin" className={buttonVariants({ className: 'mt-6' })}>
+          <Link
+            href={backPath}
+            className={buttonVariants({ className: 'mt-6' })}
+          >
             <ArrowLeft />
-            운영센터로 이동
+            {backLabel}
           </Link>
         </div>
       </main>
@@ -256,9 +292,12 @@ export function LiveReport({ reportId }: { reportId: string }) {
   return (
     <main className="min-h-screen bg-slate-200 px-2 py-4 text-slate-900 sm:px-4 sm:py-8 print:bg-white print:p-0">
       <div className="report-actions mx-auto mb-4 flex max-w-[210mm] flex-col gap-2 sm:flex-row sm:justify-between">
-        <Link href="/admin" className={buttonVariants({ variant: 'outline' })}>
+        <Link
+          href={backPath}
+          className={buttonVariants({ variant: 'outline' })}
+        >
           <ArrowLeft />
-          운영센터
+          {backLabel}
         </Link>
         {['published', 'withdrawn'].includes(data.report.status) && (
           <Button disabled={downloading} onClick={() => void downloadPdf()}>

@@ -74,7 +74,7 @@ test('customer plant and inspection forms plus refresh/logout share draft protec
           ' && draft !== baseline.current,\\s*busy(?: \\|\\| rowBusy)?[,]?\\s*\\)',
       ),
     );
-    assert.match(section, /<fieldset disabled=\{busy\}/);
+    assert.match(section, /<fieldset\s+disabled=\{\s*busy(?:\s*\|\|[^}]*)?\}/);
   }
   assert.match(app, /requestNavigation\('refresh'\)/);
   assert.match(app, /requestNavigation\('logout'\)/);

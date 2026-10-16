@@ -9,6 +9,7 @@ import {
   problem,
   serviceRpc,
   validateAccountDetails,
+  accountDetailsFingerprint,
   type AccountDetails,
   type CustomerKind,
   type Onboarding,
@@ -81,11 +82,8 @@ export function AccountProfile({
   );
   useDraftProtection(
     Boolean(data) &&
-      JSON.stringify(details) !==
-        JSON.stringify({
-          ...data?.profile,
-          kind: data?.profile.kind ?? 'individual',
-        }),
+      accountDetailsFingerprint(details, isClient) !==
+        accountDetailsFingerprint(data!.profile, isClient),
     busy,
   );
   async function save(e: React.SyntheticEvent<HTMLFormElement>) {
@@ -172,7 +170,11 @@ export function AccountProfile({
           value={details[key] ?? ''}
           onChange={(e) => {
             setDetails({ ...details, [key]: e.target.value });
-            if (errorField === key) setErrorField(null);
+            setMessage('');
+            if (errorField === key) {
+              setErrorField(null);
+              setError('');
+            }
           }}
         />
         {errorField === key && (
@@ -236,12 +238,24 @@ export function AccountProfile({
                   <select
                     className="min-h-11 w-full rounded-lg border px-3"
                     value={details.kind ?? 'individual'}
-                    onChange={(e) =>
+                    onChange={(e) => {
                       setDetails({
                         ...details,
                         kind: e.target.value as CustomerKind,
-                      })
-                    }
+                      });
+                      setMessage('');
+                      if (
+                        errorField &&
+                        [
+                          'business_name',
+                          'business_number',
+                          'representative',
+                        ].includes(errorField)
+                      ) {
+                        setErrorField(null);
+                        setError('');
+                      }
+                    }}
                   >
                     {Object.entries(customerKinds).map(([k, v]) => (
                       <option key={k} value={k}>
@@ -262,9 +276,17 @@ export function AccountProfile({
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() =>
-                        setDetails({ ...details, representative: details.name })
-                      }
+                      onClick={() => {
+                        setDetails({
+                          ...details,
+                          representative: details.name,
+                        });
+                        setMessage('');
+                        if (errorField === 'representative') {
+                          setErrorField(null);
+                          setError('');
+                        }
+                      }}
                     >
                       담당자와 동일
                     </Button>
