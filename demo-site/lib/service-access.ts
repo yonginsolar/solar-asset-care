@@ -75,8 +75,10 @@ export function validateAccountDetails(d: AccountDetails, client: boolean) {
   if (client && !Object.hasOwn(customerKinds, d.kind || ''))
     return '고객 구분을 선택해 주세요.';
   if (client && d.kind !== 'individual') {
-    if (!d.business_name?.trim() || !d.representative?.trim())
-      return '상호와 대표자 이름을 입력해 주세요.';
+    if (!d.business_name?.trim() || d.business_name.trim().length > 160)
+      return '상호를 160자 이내로 입력해 주세요.';
+    if ((d.representative?.trim().length ?? 0) > 80)
+      return '대표자 이름은 80자 이내로 입력해 주세요.';
     if (!businessNumberValid(d.business_number || ''))
       return '사업자등록번호를 확인해 주세요.';
   }

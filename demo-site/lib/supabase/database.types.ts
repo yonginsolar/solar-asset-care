@@ -1650,8 +1650,8 @@ export type Database = {
       create_requester_plant_with_details: {
         Args: {
           p_address: string;
-          p_capacity_kw: number;
-          p_commissioned_on: string;
+          p_capacity_kw: number | null;
+          p_commissioned_on: string | null;
           p_data_use_consent: boolean;
           p_inverter_model: string;
           p_module_model: string;
@@ -1677,6 +1677,20 @@ export type Database = {
           isOneToOne: true;
           isSetofReturn: false;
         };
+      };
+      update_requester_plant: {
+        Args: {
+          p_plant_id: string;
+          p_expected_updated_at: string;
+          p_name: string;
+          p_address: string;
+          p_capacity_kw: number | null;
+          p_commissioned_on: string | null;
+          p_operator_type: string;
+          p_module_model: string;
+          p_inverter_model: string;
+        };
+        Returns: Database['public']['Tables']['plants']['Row'];
       };
       fail_relative_analysis: {
         Args: { p_analysis_run_id: string; p_message: string };

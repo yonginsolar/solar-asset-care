@@ -57,6 +57,7 @@ const organizations = [];
 const paths = [];
 const artifacts = [];
 let reportId;
+const createdReportIds = [];
 let checks = 0;
 let failure;
 const cleanupErrors = [];
@@ -172,10 +173,19 @@ try {
       },
     ]),
   );
-  for (const actor of [client, otherClient]) await required(actor.client.rpc('complete_service_profile', {
-    p_org: organization.id, p_details: { name: '가상 수용시험 고객', phone: '01012345678', kind: 'individual' },
-    p_policy_id: null, p_accept: false,
-  }));
+  for (const actor of [client, otherClient])
+    await required(
+      actor.client.rpc('complete_service_profile', {
+        p_org: organization.id,
+        p_details: {
+          name: '가상 수용시험 고객',
+          phone: '01012345678',
+          kind: 'individual',
+        },
+        p_policy_id: null,
+        p_accept: false,
+      }),
+    );
   const plant = await required(
     owner.client
       .from('plants')
@@ -850,6 +860,132 @@ try {
     ),
     'approved image bytes cannot be overwritten',
   );
+  // Photo-first: no capacity, commissioning date, weather, generation or costs.
+  const plantEdit = (p, expected = p.updated_at) => ({
+    p_plant_id: plant.id,
+    p_expected_updated_at: expected,
+    p_name: plant.name,
+    p_address: p.address || '',
+    p_capacity_kw: p.capacity_kw,
+    p_commissioned_on: p.commissioned_on,
+    p_operator_type: '',
+    p_module_model: '',
+    p_inverter_model: '',
+  });
+  const basicPlant = await required(
+    client.client.rpc(
+      'update_requester_plant',
+      plantEdit({
+        ...plant,
+        address: '',
+        capacity_kw: null,
+        commissioned_on: null,
+      }),
+    ),
+  );
+  check(
+    basicPlant.capacity_kw === null && basicPlant.commissioned_on === null,
+    'customer can defer economic plant information',
+  );
+  for (const blocked of [expert, otherClient, otherOwner])
+    check(
+      Boolean(
+        (
+          await blocked.client.rpc(
+            'update_requester_plant',
+            plantEdit(basicPlant),
+          )
+        ).error,
+      ),
+      'expert, unlinked customer and other organization cannot edit customer plant',
+    );
+  check(
+    Boolean(
+      (
+        await client.client.rpc(
+          'update_requester_plant',
+          plantEdit(basicPlant, plant.updated_at),
+        )
+      ).error,
+    ),
+    'stale customer plant edit is rejected',
+  );
+  const photoReport = await required(
+    expert.client.rpc('create_report_draft', {
+      p_inspection_id: inspection.id,
+      p_title: '사진만으로 진행한 진단 시험',
+    }),
+  );
+  reportId = photoReport.id;
+  createdReportIds.push(reportId);
+  await required(
+    expert.client.rpc('transition_report_status', {
+      p_report_id: reportId,
+      p_next_status: 'review',
+    }),
+  );
+  const photoSnapshot = await required(
+    owner.client
+      .from('report_snapshots')
+      .select('*')
+      .eq('report_id', reportId)
+      .single(),
+  );
+  check(
+    photoSnapshot.content.schemaVersion === 2 &&
+      photoSnapshot.content.assessment === null &&
+      photoSnapshot.content.settings === null,
+    'photo report freezes without invented measurement or financial data',
+  );
+  await required(
+    owner.client.rpc('transition_report_status', {
+      p_report_id: reportId,
+      p_next_status: 'approved',
+    }),
+  );
+  paths.push({
+    bucket: 'reports',
+    path: `${organization.id}/${inspection.id}/${reportId}/${photoSnapshot.sha256}.pdf`,
+  });
+  const photoPrepared = await api(owner, 'POST');
+  if (!photoPrepared.ok)
+    throw new Error(
+      `Photo PDF failed: ${photoPrepared.status} ${await photoPrepared.text()}`,
+    );
+  check(
+    (await photoPrepared.json()).archived === true,
+    'photo-only PDF generated and archived on deployed server',
+  );
+  await required(
+    owner.client.rpc('transition_report_status', {
+      p_report_id: reportId,
+      p_next_status: 'published',
+    }),
+  );
+  const photoDownload = await api(client);
+  const photoBytes = Buffer.from(await photoDownload.arrayBuffer());
+  check(
+    photoDownload.ok && photoBytes.subarray(0, 4).toString() === '%PDF',
+    'customer can download issued photo-only PDF',
+  );
+  await required(
+    client.client.rpc(
+      'update_requester_plant',
+      plantEdit(plant, basicPlant.updated_at),
+    ),
+  );
+  check(
+    digest(Buffer.from(await (await api(client)).arrayBuffer())) ===
+      digest(photoBytes),
+    'later plant completion never rewrites issued photo PDF',
+  );
+  await required(
+    owner.client.rpc('transition_report_status', {
+      p_report_id: reportId,
+      p_next_status: 'withdrawn',
+      p_reason: '격리 시험: 이후 경제성 포함 버전으로 전환',
+    }),
+  );
   const s = {
     sunHours: 3.6,
     degradationRatePercent: 0.6,
@@ -938,6 +1074,18 @@ try {
       .select('*')
       .single(),
   );
+  const retainedPhoto = await required(
+    owner.client
+      .from('report_snapshots')
+      .select('sha256,content')
+      .eq('report_id', photoReport.id)
+      .single(),
+  );
+  check(
+    retainedPhoto.sha256 === photoSnapshot.sha256 &&
+      retainedPhoto.content.assessment === null,
+    'economic assessment later leaves earlier photo report immutable',
+  );
   const report = await required(
     expert.client.rpc('create_report_draft', {
       p_inspection_id: inspection.id,
@@ -945,6 +1093,7 @@ try {
     }),
   );
   reportId = report.id;
+  createdReportIds.push(reportId);
   await required(
     expert.client.rpc('transition_report_status', {
       p_report_id: reportId,
@@ -1625,9 +1774,9 @@ try {
     const r = await admin.storage.from(object.bucket).remove([object.path]);
     if (r.error) cleanupErrors.push(`storage: ${r.error.message}`);
   }
-  if (reportId) {
+  for (const createdId of createdReportIds) {
     for (const table of ['report_documents', 'report_snapshots']) {
-      const r = await admin.from(table).delete().eq('report_id', reportId);
+      const r = await admin.from(table).delete().eq('report_id', createdId);
       if (r.error) cleanupErrors.push(`${table}: ${r.error.message}`);
     }
   }

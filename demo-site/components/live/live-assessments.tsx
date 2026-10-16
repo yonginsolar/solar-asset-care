@@ -11,6 +11,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { useInspectionSelection } from '@/lib/inspection-context';
+import { useFormDraftProtection } from '@/lib/use-form-draft-protection';
+import { formatPaybackYears } from '@/lib/payback-format';
 import type { Database, Tables } from '@/lib/supabase/database.types';
 import {
   calculateAssessment,
@@ -253,8 +256,7 @@ export function AssessmentsView(
   },
 ) {
   const { rows, loading } = useSettings(props);
-  const [selected, setSelected] = useState('');
-  const id = selected || props.inspections[0]?.id || '';
+  const [id, setSelected] = useInspectionSelection(props.inspections);
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [fetching, setFetching] = useState(true);
   const { supabase, setNotice } = props;
@@ -292,7 +294,12 @@ export function AssessmentsView(
   const plant = props.plants.find((row) => row.id === inspection?.plant_id);
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-bold">촬영조건·발전량 평가</h1>
+      <h1 className="text-2xl font-bold">경제성 분석·촬영조건</h1>
+      <p className="text-sm leading-6 text-slate-600">
+        선택 단계입니다. 사진 진단 보고서를 먼저 진행할 수 있으며, 아래 자료는
+        발전량·개선 효과를 계산할 때만 입력합니다. 확인하지 못한 값을 임의로
+        입력하지 마세요.
+      </p>
       <Field label="점검 선택">
         <select
           value={id}
@@ -348,6 +355,7 @@ function AssessmentForm(
   const r = a?.result as AssessmentResult | undefined;
   const warnings = (a?.warnings ?? []) as string[];
   const [busy, setBusy] = useState(false);
+  const draft = useFormDraftProtection(busy);
   const [settingsId, setSettingsId] = useState(
     a?.settings_id ||
       props.settings.find((s) => s.effective_from <= koreanDate())?.id ||
@@ -420,192 +428,202 @@ function AssessmentForm(
     <>
       {missingPlant && (
         <p role="alert" className="rounded-xl bg-amber-50 p-4 text-amber-900">
-          발전소에서 설비용량과 가동 시작일을 먼저 입력해 주세요.
+          경제성 계산에 필요한 설비용량과 가동 시작일을 발전소 정보에서 보완해
+          주세요. 사진 진단 보고서는 이 정보 없이도 진행할 수 있습니다.
         </p>
       )}
-      <form onSubmit={submit} className={`${cardStyle} space-y-6`}>
-        <Field label="적용할 계산 기준">
-          <select
-            required
-            value={settingsId}
-            onChange={(e) => setSettingsId(e.target.value)}
-            className={selectStyle}
-          >
-            <option value="">선택하세요</option>
-            {props.settings.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.version}판 · {s.effective_from}부터
-              </option>
-            ))}
-          </select>
-        </Field>
-        <h2 className="font-bold">촬영조건</h2>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <Field label="촬영·측정 시각 (한국시간)">
-            <Input
-              name="measuredAt"
-              type="datetime-local"
-              required
-              defaultValue={c ? toKoreanInput(c.measuredAt) : ''}
-            />
-          </Field>
-          <Field label="면내 일사량 (W/m²)">
-            <Input
-              name="irradiance"
-              type="number"
-              required
-              min="0"
-              max="2000"
-              step="any"
-              defaultValue={c?.irradiance}
-            />
-          </Field>
-          <Field label="풍속 (m/s)">
-            <Input
-              name="wind"
-              type="number"
-              required
-              min="0"
-              max="100"
-              step="any"
-              defaultValue={c?.wind}
-            />
-          </Field>
-          <Field label="외기온 (℃)">
-            <Input
-              name="ambientTemperature"
-              type="number"
-              required
-              min="-80"
-              max="80"
-              step="any"
-              defaultValue={c?.ambientTemperature}
-            />
-          </Field>
-          <Field label="촬영각도 (°·패널면 기준)">
-            <Input
-              name="angle"
-              type="number"
-              required
-              min="0"
-              max="90"
-              step="any"
-              defaultValue={c?.angle}
-            />
-          </Field>
-          <Field label="촬영거리 (m)">
-            <Input
-              name="distance"
-              type="number"
-              required
-              min="0.01"
-              max="1000"
-              step="any"
-              defaultValue={c?.distance}
-            />
-          </Field>
-        </div>
-        <Field label="촬영조건 측정 장비·출처">
-          <Input
-            name="source"
-            required
-            maxLength={1000}
-            defaultValue={c?.source}
-          />
-        </Field>
-        <h2 className="font-bold">발전량·개선 효과</h2>
-        <p className="text-sm text-slate-600">
-          설비용량 {props.plant.capacity_kw ?? '미입력'} kW · 가동 시작일{' '}
-          {props.plant.commissioned_on ?? '미입력'}
-        </p>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <Field label="분석 시작일 (포함)">
-            <Input
-              name="periodStart"
-              type="date"
-              required
-              min={props.plant.commissioned_on ?? undefined}
-              max={koreanDate()}
-              defaultValue={p?.periodStart}
-            />
-          </Field>
-          <Field label="분석 종료일 (포함)">
-            <Input
-              name="periodEnd"
-              type="date"
-              required
-              min={props.plant.commissioned_on ?? undefined}
-              max={koreanDate()}
-              defaultValue={p?.periodEnd}
-            />
-          </Field>
-          <Field label="같은 기간 실발전량 (kWh)">
-            <Input
-              name="actualGenerationKwh"
-              type="number"
-              required
-              min="0"
-              max="100000000000"
-              step="any"
-              defaultValue={p?.actualGenerationKwh}
-            />
-          </Field>
-          <Field label="운영형태">
+      <form
+        ref={draft.ref}
+        onInput={draft.onInput}
+        onChange={draft.onChange}
+        onSubmit={submit}
+        className={`${cardStyle} space-y-6`}
+      >
+        <fieldset disabled={busy} className="space-y-6">
+          <Field label="적용할 계산 기준">
             <select
-              name="operationType"
+              name="settingsId"
+              required
+              value={settingsId}
+              onChange={(e) => setSettingsId(e.target.value)}
               className={selectStyle}
-              defaultValue={p?.operationType ?? 'generation'}
             >
-              <option value="generation">발전사업형</option>
-              <option value="self-use">자가소비형</option>
-            </select>
-          </Field>
-          <Field label="개선 대상">
-            <select
-              name="defectType"
-              className={selectStyle}
-              defaultValue={p?.defectType ?? 'soiling'}
-            >
-              {Object.entries(improvementLabels).map(([k, label]) => (
-                <option key={k} value={k}>
-                  {label}
+              <option value="">선택하세요</option>
+              {props.settings.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.version}판 · {s.effective_from}부터
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="예상 수리비 (원)">
+          <h2 className="font-bold">촬영조건</h2>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <Field label="촬영·측정 시각 (한국시간)">
+              <Input
+                name="measuredAt"
+                type="datetime-local"
+                required
+                defaultValue={c ? toKoreanInput(c.measuredAt) : ''}
+              />
+            </Field>
+            <Field label="면내 일사량 (W/m²)">
+              <Input
+                name="irradiance"
+                type="number"
+                required
+                min="0"
+                max="2000"
+                step="any"
+                defaultValue={c?.irradiance}
+              />
+            </Field>
+            <Field label="풍속 (m/s)">
+              <Input
+                name="wind"
+                type="number"
+                required
+                min="0"
+                max="100"
+                step="any"
+                defaultValue={c?.wind}
+              />
+            </Field>
+            <Field label="외기온 (℃)">
+              <Input
+                name="ambientTemperature"
+                type="number"
+                required
+                min="-80"
+                max="80"
+                step="any"
+                defaultValue={c?.ambientTemperature}
+              />
+            </Field>
+            <Field label="촬영각도 (°·패널면 기준)">
+              <Input
+                name="angle"
+                type="number"
+                required
+                min="0"
+                max="90"
+                step="any"
+                defaultValue={c?.angle}
+              />
+            </Field>
+            <Field label="촬영거리 (m)">
+              <Input
+                name="distance"
+                type="number"
+                required
+                min="0.01"
+                max="1000"
+                step="any"
+                defaultValue={c?.distance}
+              />
+            </Field>
+          </div>
+          <Field label="촬영조건 측정 장비·출처">
             <Input
-              name="repairCost"
-              type="number"
+              name="source"
               required
-              min="0"
-              max="1000000000000"
-              step="any"
-              defaultValue={p?.repairCost}
-            />
-          </Field>
-        </div>
-        <Field label="실발전량 출처·확인 근거">
-          <Textarea
-            name="generationSource"
-            required
-            maxLength={1000}
-            defaultValue={p?.generationSource}
-            placeholder="예: 해당 기간 인버터 누적발전량 검침 기록"
-          />
-        </Field>
-        {props.isOwner && (
-          <Field label="촬영조건 예외 승인 사유 (기준 이탈을 승인할 때만 입력)">
-            <Textarea
-              name="exceptionReason"
               maxLength={1000}
-              defaultValue={a?.exception_reason ?? ''}
+              defaultValue={c?.source}
             />
           </Field>
-        )}
-        <Button type="submit" disabled={busy || missingPlant || !settingsId}>
-          {busy ? '계산·저장 중…' : '평가 계산·저장'}
-        </Button>
+          <h2 className="font-bold">발전량·개선 효과</h2>
+          <p className="text-sm text-slate-600">
+            설비용량 {props.plant.capacity_kw ?? '미입력'} kW · 가동 시작일{' '}
+            {props.plant.commissioned_on ?? '미입력'}
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <Field label="분석 시작일 (포함)">
+              <Input
+                name="periodStart"
+                type="date"
+                required
+                min={props.plant.commissioned_on ?? undefined}
+                max={koreanDate()}
+                defaultValue={p?.periodStart}
+              />
+            </Field>
+            <Field label="분석 종료일 (포함)">
+              <Input
+                name="periodEnd"
+                type="date"
+                required
+                min={props.plant.commissioned_on ?? undefined}
+                max={koreanDate()}
+                defaultValue={p?.periodEnd}
+              />
+            </Field>
+            <Field label="같은 기간 실발전량 (kWh)">
+              <Input
+                name="actualGenerationKwh"
+                type="number"
+                required
+                min="0"
+                max="100000000000"
+                step="any"
+                defaultValue={p?.actualGenerationKwh}
+              />
+            </Field>
+            <Field label="발전 전력 이용 방식">
+              <select
+                name="operationType"
+                className={selectStyle}
+                defaultValue={p?.operationType ?? 'generation'}
+              >
+                <option value="generation">발전사업형</option>
+                <option value="self-use">자가소비형</option>
+              </select>
+            </Field>
+            <Field label="개선 대상">
+              <select
+                name="defectType"
+                className={selectStyle}
+                defaultValue={p?.defectType ?? 'soiling'}
+              >
+                {Object.entries(improvementLabels).map(([k, label]) => (
+                  <option key={k} value={k}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="예상 수리비 (원)">
+              <Input
+                name="repairCost"
+                type="number"
+                required
+                min="0"
+                max="1000000000000"
+                step="any"
+                defaultValue={p?.repairCost}
+              />
+            </Field>
+          </div>
+          <Field label="실발전량 출처·확인 근거">
+            <Textarea
+              name="generationSource"
+              required
+              maxLength={1000}
+              defaultValue={p?.generationSource}
+              placeholder="예: 해당 기간 인버터 누적발전량 검침 기록"
+            />
+          </Field>
+          {props.isOwner && (
+            <Field label="촬영조건 예외 승인 사유 (기준 이탈을 승인할 때만 입력)">
+              <Textarea
+                name="exceptionReason"
+                maxLength={1000}
+                defaultValue={a?.exception_reason ?? ''}
+              />
+            </Field>
+          )}
+          <Button type="submit" disabled={busy || missingPlant || !settingsId}>
+            {busy ? '계산·저장 중…' : '평가 계산·저장'}
+          </Button>
+        </fieldset>
       </form>
       {r && (
         <section className={cardStyle}>
@@ -652,12 +670,7 @@ export function AssessmentSummary({ result: r }: { result: AssessmentResult }) {
           ['기간 회수가능액', fmt(r.recoverableAmount, '원')],
           ['연간 환산 회수가능액', fmt(r.annualRecoverableAmount, '원/년')],
           ['적용 단가', fmt(r.tariff, '원/kWh')],
-          [
-            '단순 투자회수기간',
-            r.paybackYears === null
-              ? '산출 불가 (회수가능액 0)'
-              : fmt(r.paybackYears, '년'),
-          ],
+          ['단순 투자회수기간', formatPaybackYears(r.paybackYears)],
         ].map(([label, value]) => (
           <div key={label}>
             <dt className="text-sm text-slate-500">{label}</dt>

@@ -115,7 +115,7 @@ export function LiveReport({ reportId }: { reportId: string }) {
             'report' | 'fileCount' | 'snapshot'
           > & { schemaVersion: number; title: string; files: unknown[] };
           if (
-            content.schemaVersion !== 1 ||
+            ![1, 2].includes(content.schemaVersion) ||
             !content.plant ||
             !content.inspection ||
             !Array.isArray(content.files)
@@ -326,6 +326,20 @@ export function LiveReport({ reportId }: { reportId: string }) {
             {data.inspection.notes || '별도 현장 메모가 없습니다.'}
           </p>
         </ReportSection>
+
+        {!data.assessment && (
+          <ReportSection title="사진 진단 범위">
+            <p>
+              사진의 상대 색상 분포와 전문가 소견을 검토합니다. 촬영조건 측정
+              자료가 없어 촬영 유효성은 확인하지 않았으며 실제 온도·고장을
+              확정하는 진단은 아닙니다.
+            </p>
+            <p className="mt-2">
+              경제성 분석은 실시하지 않았습니다. 발전량·수리비 등은 필요할 때
+              확인하고 새 보고서 버전에 반영할 수 있습니다.
+            </p>
+          </ReportSection>
+        )}
 
         {capture && (
           <ReportSection title="촬영조건·유효성">

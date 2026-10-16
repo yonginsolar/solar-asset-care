@@ -442,9 +442,8 @@ export function CustomersView({
                     />
                   </label>
                   <label className="space-y-2 text-sm">
-                    <span className="block">대표자</span>
+                    <span className="block">대표자 (선택)</span>
                     <Input
-                      required
                       maxLength={80}
                       value={representative}
                       onChange={(e) => setRepresentative(e.target.value)}
@@ -473,7 +472,7 @@ export function CustomersView({
                     </span>
                     <p className="mt-2 text-xs leading-6 text-slate-600">
                       {a.details
-                        ? `${customerKinds[a.details.kind ?? 'individual']} · ${a.details.phone}${a.details.business_name ? ' · ' + a.details.business_name + ' · ' + a.details.business_number + ' · 대표 ' + a.details.representative : ''}`
+                        ? `${customerKinds[a.details.kind ?? 'individual']} · ${a.details.phone}${a.details.business_name ? ' · ' + a.details.business_name + ' · ' + a.details.business_number + (a.details.representative ? ' · 대표 ' + a.details.representative : '') : ''}`
                         : '기본정보 미입력'}
                     </p>
                     {a.details && (

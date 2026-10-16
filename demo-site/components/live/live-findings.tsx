@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { useInspectionSelection } from '@/lib/inspection-context';
+import { useFormDraftProtection } from '@/lib/use-form-draft-protection';
 import Image from 'next/image';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
@@ -68,9 +70,9 @@ function optionalNumber(f: FormData, k: string) {
 }
 
 export function FindingsEditorView(props: Props) {
-  const [inspection, setInspection] = useState('');
-  const id = inspection || props.inspections[0]?.id || '';
+  const [id, setInspection] = useInspectionSelection(props.inspections);
   const [editing, setEditing] = useState<Finding | null>(null);
+  const [editorVersion, setEditorVersion] = useState(0);
   const findings = props.findings.filter((f) => f.inspection_id === id);
   return (
     <div className="space-y-5">
@@ -80,7 +82,7 @@ export function FindingsEditorView(props: Props) {
           className={selectClass}
           value={id}
           onChange={(e) => {
-            setInspection(e.target.value);
+            if (!setInspection(e.target.value)) return;
             setEditing(null);
           }}
         >
@@ -101,11 +103,14 @@ export function FindingsEditorView(props: Props) {
       <div className="grid items-start gap-5 xl:grid-cols-2">
         {id && props.canWrite && (
           <FindingForm
-            key={`${id}-${editing?.id ?? 'new'}-${editing?.updated_at ?? ''}`}
+            key={`${id}-${editing?.id ?? 'new'}-${editing?.updated_at ?? ''}-${editorVersion}`}
             {...props}
             inspectionId={id}
             initial={editing}
-            finish={() => setEditing(null)}
+            finish={() => {
+              setEditing(null);
+              setEditorVersion((v) => v + 1);
+            }}
           />
         )}
         <section className="space-y-3">
@@ -180,6 +185,7 @@ function FindingForm(
   const [fileId, setFileId] = useState(f?.source_file_id ?? '');
   const [preview, setPreview] = useState('');
   const [busy, setBusy] = useState(false);
+  const draft = useFormDraftProtection(busy);
   const [previewError, setPreviewError] = useState('');
   const sourceFile = files.find((file) => file.id === fileId);
   const initialRegion = validImageRegion(f?.region) ? f.region : null;
@@ -341,224 +347,230 @@ function FindingForm(
   }
   return (
     <form
+      ref={draft.ref}
+      onInput={draft.onInput}
+      onChange={draft.onChange}
       onSubmit={submit}
       className="min-w-0 space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
     >
-      <div className="flex justify-between gap-3">
-        <h2 className="font-bold">{f ? '소견 수정' : '수동 소견 등록'}</h2>
-        {f && (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={props.finish}
-          >
-            새 소견
-          </Button>
-        )}
-      </div>
-      <Field label="근거 원본">
-        <select
-          className={selectClass}
-          value={fileId}
-          onChange={(e) => {
-            setFileId(e.target.value);
-            setSelectedRegion(
-              e.target.value === f?.source_file_id ? initialRegion : null,
-            );
-          }}
-          disabled={f?.source === 'rule_candidate'}
-        >
-          <option value="">원본 선택</option>
-          {files.map((file) => (
-            <option key={file.id} value={file.id}>
-              {file.original_name}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {previewError && (
-        <p role="alert" className="text-sm text-rose-700">
-          {previewError}
-        </p>
-      )}
-      {preview && (
-        <button
-          type="button"
-          className="relative block w-full touch-none select-none overflow-hidden rounded-lg bg-slate-100 text-left outline-none ring-teal-500 focus-visible:ring-2"
-          aria-label="의심 영역 선택: 사진에서 영역을 끌어 표시하세요"
-          onPointerDown={beginRegion}
-          onPointerMove={moveRegion}
-          onPointerUp={finishRegion}
-          onPointerCancel={() => {
-            dragStart.current = null;
-          }}
-        >
-          <Image
-            unoptimized
-            src={preview}
-            alt="판정 근거 사진 미리보기"
-            width={1024}
-            height={768}
-            draggable={false}
-            className="pointer-events-none block h-auto w-full"
-            onError={() =>
-              setPreviewError(
-                '사진을 불러오지 못했습니다. 사진을 다시 선택해 주세요.',
-              )
-            }
-          />
-          {selectedRegion && (
-            <div
-              className="pointer-events-none absolute border-2 border-rose-500 bg-rose-500/15"
-              style={{
-                left: `${selectedRegion.x * 100}%`,
-                top: `${selectedRegion.y * 100}%`,
-                width: `${selectedRegion.width * 100}%`,
-                height: `${selectedRegion.height * 100}%`,
-              }}
-            />
+      <fieldset disabled={busy} className="space-y-4">
+        <input type="hidden" name="sourceFileId" value={fileId} />
+        <div className="flex justify-between gap-3">
+          <h2 className="font-bold">{f ? '소견 수정' : '수동 소견 등록'}</h2>
+          {f && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={props.finish}
+            >
+              새 소견
+            </Button>
           )}
-        </button>
-      )}
-      {preview && (
-        <div className="rounded-xl border bg-slate-50 p-3 text-sm text-slate-700">
-          <p>사진에서 의심 부위를 손가락이나 마우스로 끌어 표시하세요.</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                setSelectedRegion({ x: 0, y: 0, width: 1, height: 1 })
-              }
-            >
-              사진 전체 선택
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!selectedRegion}
-              onClick={() => setSelectedRegion(null)}
-            >
-              영역 지우기
-            </Button>
-          </div>
         </div>
-      )}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="후보 구분">
+        <Field label="근거 원본">
           <select
-            name="kind"
             className={selectClass}
-            defaultValue={f?.kind ?? 'hotspot'}
+            value={fileId}
+            onChange={(e) => {
+              setFileId(e.target.value);
+              setSelectedRegion(
+                e.target.value === f?.source_file_id ? initialRegion : null,
+              );
+            }}
+            disabled={f?.source === 'rule_candidate'}
           >
-            {Object.entries(kindLabels).map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
+            <option value="">원본 선택</option>
+            {files.map((file) => (
+              <option key={file.id} value={file.id}>
+                {file.original_name}
               </option>
             ))}
           </select>
         </Field>
-        <Field label="이상 유형">
-          <select
-            name="defectType"
-            className={selectClass}
-            defaultValue={f?.defect_type ?? 'other'}
+        {previewError && (
+          <p role="alert" className="text-sm text-rose-700">
+            {previewError}
+          </p>
+        )}
+        {preview && (
+          <button
+            type="button"
+            className="relative block w-full touch-none select-none overflow-hidden rounded-lg bg-slate-100 text-left outline-none ring-teal-500 focus-visible:ring-2"
+            aria-label="의심 영역 선택: 사진에서 영역을 끌어 표시하세요"
+            onPointerDown={beginRegion}
+            onPointerMove={moveRegion}
+            onPointerUp={finishRegion}
+            onPointerCancel={() => {
+              dragStart.current = null;
+            }}
           >
-            {Object.entries(defectLabels).map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
-              </option>
-            ))}
+            <Image
+              unoptimized
+              src={preview}
+              alt="판정 근거 사진 미리보기"
+              width={1024}
+              height={768}
+              draggable={false}
+              className="pointer-events-none block h-auto w-full"
+              onError={() =>
+                setPreviewError(
+                  '사진을 불러오지 못했습니다. 사진을 다시 선택해 주세요.',
+                )
+              }
+            />
+            {selectedRegion && (
+              <div
+                className="pointer-events-none absolute border-2 border-rose-500 bg-rose-500/15"
+                style={{
+                  left: `${selectedRegion.x * 100}%`,
+                  top: `${selectedRegion.y * 100}%`,
+                  width: `${selectedRegion.width * 100}%`,
+                  height: `${selectedRegion.height * 100}%`,
+                }}
+              />
+            )}
+          </button>
+        )}
+        {preview && (
+          <div className="rounded-xl border bg-slate-50 p-3 text-sm text-slate-700">
+            <p>사진에서 의심 부위를 손가락이나 마우스로 끌어 표시하세요.</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setSelectedRegion({ x: 0, y: 0, width: 1, height: 1 })
+                }
+              >
+                사진 전체 선택
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!selectedRegion}
+                onClick={() => setSelectedRegion(null)}
+              >
+                영역 지우기
+              </Button>
+            </div>
+          </div>
+        )}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="후보 구분">
+            <select
+              name="kind"
+              className={selectClass}
+              defaultValue={f?.kind ?? 'hotspot'}
+            >
+              {Object.entries(kindLabels).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="이상 유형">
+            <select
+              name="defectType"
+              className={selectClass}
+              defaultValue={f?.defect_type ?? 'other'}
+            >
+              {Object.entries(defectLabels).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="위치·모듈 식별">
+            <Input
+              name="locationLabel"
+              maxLength={200}
+              defaultValue={f?.location_label ?? ''}
+              placeholder="예: 2열 5번 모듈"
+            />
+          </Field>
+          <Field label="심각도">
+            <select
+              name="severity"
+              className={selectClass}
+              defaultValue={f?.severity ?? 'review'}
+            >
+              {Object.entries(severityLabels).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="최고 온도 (℃·측정값이 있을 때만)">
+            <Input
+              name="maxTemperature"
+              type="number"
+              min="-273.15"
+              max="2000"
+              step="0.01"
+              defaultValue={f?.temperature_max_c ?? ''}
+            />
+          </Field>
+          <Field label="기준 부위 대비 온도차 (℃)">
+            <Input
+              name="deltaTemperature"
+              type="number"
+              min="-1000"
+              max="1000"
+              step="0.01"
+              defaultValue={f?.temperature_delta_c ?? ''}
+            />
+          </Field>
+        </div>
+        <Field label="온도 측정 장비·원본·근거">
+          <Input
+            name="measurementSource"
+            maxLength={1000}
+            defaultValue={f?.measurement_source ?? ''}
+          />
+        </Field>
+        {(['x', 'y', 'width', 'height'] as const).map((key) => (
+          <input
+            key={key}
+            name={key}
+            type="hidden"
+            value={selectedRegion ? selectedRegion[key] * 100 : ''}
+          />
+        ))}
+        <Field label="판정">
+          <select
+            name="disposition"
+            className={selectClass}
+            defaultValue={
+              f?.disposition === 'rejected'
+                ? 'rejected'
+                : f
+                  ? 'modified'
+                  : 'accepted'
+            }
+          >
+            <option value="accepted">채택</option>
+            <option value="modified">수정 채택</option>
+            <option value="rejected">제외 (이력 보존)</option>
           </select>
         </Field>
-        <Field label="위치·모듈 식별">
-          <Input
-            name="locationLabel"
-            maxLength={200}
-            defaultValue={f?.location_label ?? ''}
-            placeholder="예: 2열 5번 모듈"
+        <Field label="판정 근거·권고 조치">
+          <Textarea
+            name="note"
+            required
+            maxLength={4000}
+            defaultValue={f?.expert_note ?? ''}
           />
         </Field>
-        <Field label="심각도">
-          <select
-            name="severity"
-            className={selectClass}
-            defaultValue={f?.severity ?? 'review'}
-          >
-            {Object.entries(severityLabels).map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="최고 온도 (℃·측정값이 있을 때만)">
-          <Input
-            name="maxTemperature"
-            type="number"
-            min="-273.15"
-            max="2000"
-            step="0.01"
-            defaultValue={f?.temperature_max_c ?? ''}
-          />
-        </Field>
-        <Field label="기준 부위 대비 온도차 (℃)">
-          <Input
-            name="deltaTemperature"
-            type="number"
-            min="-1000"
-            max="1000"
-            step="0.01"
-            defaultValue={f?.temperature_delta_c ?? ''}
-          />
-        </Field>
-      </div>
-      <Field label="온도 측정 장비·원본·근거">
-        <Input
-          name="measurementSource"
-          maxLength={1000}
-          defaultValue={f?.measurement_source ?? ''}
-        />
-      </Field>
-      {(['x', 'y', 'width', 'height'] as const).map((key) => (
-        <input
-          key={key}
-          name={key}
-          type="hidden"
-          value={selectedRegion ? selectedRegion[key] * 100 : ''}
-        />
-      ))}
-      <Field label="판정">
-        <select
-          name="disposition"
-          className={selectClass}
-          defaultValue={
-            f?.disposition === 'rejected'
-              ? 'rejected'
-              : f
-                ? 'modified'
-                : 'accepted'
-          }
-        >
-          <option value="accepted">채택</option>
-          <option value="modified">수정 채택</option>
-          <option value="rejected">제외 (이력 보존)</option>
-        </select>
-      </Field>
-      <Field label="판정 근거·권고 조치">
-        <Textarea
-          name="note"
-          required
-          maxLength={4000}
-          defaultValue={f?.expert_note ?? ''}
-        />
-      </Field>
-      <Button type="submit" disabled={busy}>
-        {busy ? '저장 중…' : '판정 저장'}
-      </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? '저장 중…' : '판정 저장'}
+        </Button>
+      </fieldset>
     </form>
   );
 }

@@ -6,6 +6,8 @@ import {
   useMemo,
   useState,
   useRef,
+  Children,
+  isValidElement,
   type SyntheticEvent,
 } from 'react';
 import Link from 'next/link';
@@ -84,6 +86,11 @@ import { InspectionPreviewButton } from './inspection-preview';
 import { AccountProfile } from './live-profile';
 import { useDraftProtection } from '@/lib/use-draft-protection';
 import { draftNavigationState } from '@/lib/draft-navigation';
+import {
+  InspectionSelectionProvider,
+  useInspectionSelection,
+  resolveInspectionSelection,
+} from '@/lib/inspection-context';
 import { ServiceSettingsView } from './live-service-settings';
 import { CustomersView } from './live-customers';
 import { AuditView } from './live-audit';
@@ -236,7 +243,7 @@ const navItems: Array<{
   { id: 'files', label: '열화상 업로드', icon: UploadCloud },
   { id: 'report-images', label: '보고서 사진', icon: ImageIcon },
   { id: 'findings', label: '후보 판정', icon: ThermometerSun },
-  { id: 'assessments', label: '촬영조건·발전량', icon: Gauge },
+  { id: 'assessments', label: '경제성 분석·촬영조건', icon: Gauge },
   { id: 'calculation-settings', label: '계산·촬영 기준', icon: ClipboardCheck },
   { id: 'reports', label: '보고서', icon: FileText },
   { id: 'maintenance', label: '유지보수', icon: Wrench },
@@ -515,15 +522,27 @@ function AuthPanel({
   supabase: SupabaseClient<Database>;
   signup?: boolean;
 }) {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>(
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot' | 'resend'>(
     signup ? 'signup' : 'signin',
   );
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [resendSeconds, setResendSeconds] = useState(0);
+  const authLock = useRef(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+
+  useEffect(() => {
+    if (!resendSeconds) return;
+    const timer = window.setTimeout(
+      () => setResendSeconds((s) => Math.max(0, s - 1)),
+      1000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [resendSeconds]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1));
@@ -538,13 +557,27 @@ function AuthPanel({
 
   async function submit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (authLock.current || (mode === 'resend' && resendSeconds > 0)) return;
+    authLock.current = true;
     setBusy(true);
     setNotice(null);
     const redirectTo =
       process.env.NEXT_PUBLIC_AUTH_REDIRECT_URL?.trim() ||
       `${window.location.origin}/`;
     try {
-      if (mode === 'forgot') {
+      if (mode === 'resend') {
+        setResendSeconds(60);
+        const { error } = await supabase.auth.resend({
+          type: 'signup',
+          email: email.trim(),
+          options: { emailRedirectTo: redirectTo },
+        });
+        if (error) throw error;
+        setNotice({
+          tone: 'success',
+          text: '인증 대기 중인 이메일이면 가입 인증 메일이 발송됩니다. 스팸함도 확인해 주세요. 관리자·전문가 초대는 관리자에게 재발송을 요청해 주세요.',
+        });
+      } else if (mode === 'forgot') {
         const { error } = await supabase.auth.resetPasswordForEmail(
           email.trim(),
           {
@@ -557,8 +590,12 @@ function AuthPanel({
           text: '비밀번호 변경 메일을 보냈습니다. 메일의 링크는 한 번만 사용해 주세요.',
         });
       } else if (mode === 'signup') {
-        if (password !== passwordConfirm)
+        if (password !== passwordConfirm) {
+          event.currentTarget
+            .querySelector<HTMLInputElement>('[name="passwordConfirm"]')
+            ?.focus();
           throw new Error('비밀번호 확인이 일치하지 않습니다.');
+        }
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
@@ -569,6 +606,7 @@ function AuthPanel({
         });
         if (error) throw error;
         if (!data.session) {
+          setResendSeconds(60);
           setNotice({
             tone: 'success',
             text: '가입 메일을 보냈습니다. 메일의 인증 링크를 누른 뒤 이 화면으로 돌아와 로그인해 주세요.',
@@ -585,6 +623,7 @@ function AuthPanel({
     } catch (error) {
       setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      authLock.current = false;
       setBusy(false);
     }
   }
@@ -602,79 +641,115 @@ function AuthPanel({
                 ? '로그인'
                 : mode === 'signup'
                   ? '회원가입'
-                  : '비밀번호 재설정'}
+                  : mode === 'resend'
+                    ? '가입 인증 메일 다시 받기'
+                    : '비밀번호 재설정'}
             </h1>
             {mode !== 'signin' && (
               <p className="mt-3 text-sm leading-6 text-slate-500">
                 {mode === 'signup'
                   ? '이메일 인증 후 고객정보 입력과 이용 동의를 완료합니다. 전문가·관리자는 초대 메일로 가입해 주세요.'
-                  : '가입한 이메일로 비밀번호 변경 링크를 보내드립니다.'}
+                  : mode === 'resend'
+                    ? '회원가입 때 입력한 이메일 주소를 입력해 주세요.'
+                    : '가입한 이메일로 비밀번호 변경 링크를 보내드립니다.'}
               </p>
             )}
             <div className="mt-7">
               <NoticeBar notice={notice} />
             </div>
             <form onSubmit={submit} className="space-y-4">
-              {mode === 'signup' && (
-                <Field label="이름">
+              <fieldset disabled={busy} className="space-y-4">
+                {mode === 'signup' && (
+                  <Field label="이름">
+                    <Input
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      required
+                    />
+                  </Field>
+                )}
+                <Field label="이메일">
                   <Input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
                     required
                   />
                 </Field>
-              )}
-              <Field label="이메일">
-                <Input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  autoComplete="email"
-                  required
-                />
-              </Field>
-              {mode !== 'forgot' && (
-                <Field
-                  label="비밀번호"
-                  hint={mode === 'signup' ? '8자 이상' : undefined}
-                >
-                  <Input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    autoComplete={
-                      mode === 'signin' ? 'current-password' : 'new-password'
+                {(mode === 'signin' || mode === 'signup') && (
+                  <Field
+                    label="비밀번호"
+                    hint={mode === 'signup' ? '8자 이상' : undefined}
+                  >
+                    <Input
+                      type={showPassword ? 'text' : 'password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete={
+                        mode === 'signin' ? 'current-password' : 'new-password'
+                      }
+                      minLength={8}
+                      required
+                    />
+                  </Field>
+                )}
+                {mode === 'signup' && (
+                  <Field
+                    label="비밀번호 확인"
+                    hint={
+                      passwordConfirm && password !== passwordConfirm
+                        ? '비밀번호가 일치하지 않습니다'
+                        : undefined
                     }
-                    minLength={8}
-                    required
-                  />
-                </Field>
-              )}
-              {mode === 'signup' && (
-                <Field label="비밀번호 확인">
-                  <Input
-                    type="password"
-                    autoComplete="new-password"
-                    value={passwordConfirm}
-                    onChange={(e) => setPasswordConfirm(e.target.value)}
-                    required
-                    minLength={8}
-                  />
-                </Field>
-              )}
-              <Button type="submit" className="h-11 w-full" disabled={busy}>
-                {busy && <Loader2 className="animate-spin" />}
-                {busy
-                  ? mode === 'signin'
-                    ? '로그인 중…'
-                    : '메일 발송 중…'
-                  : mode === 'signin'
-                    ? '로그인'
-                    : mode === 'signup'
-                      ? '가입 메일 받기'
-                      : '변경 메일 받기'}
-                {!busy && <ArrowRight />}
-              </Button>
+                  >
+                    <Input
+                      name="passwordConfirm"
+                      type={showPassword ? 'text' : 'password'}
+                      aria-invalid={Boolean(
+                        passwordConfirm && password !== passwordConfirm,
+                      )}
+                      autoComplete="new-password"
+                      value={passwordConfirm}
+                      onChange={(e) => setPasswordConfirm(e.target.value)}
+                      required
+                      minLength={8}
+                    />
+                  </Field>
+                )}
+                {(mode === 'signin' || mode === 'signup') && (
+                  <label className="flex min-h-11 items-center gap-2 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={showPassword}
+                      onChange={(e) => setShowPassword(e.target.checked)}
+                      className="size-4"
+                    />
+                    비밀번호 표시
+                  </label>
+                )}
+                <Button
+                  type="submit"
+                  className="h-11 w-full"
+                  disabled={busy || (mode === 'resend' && resendSeconds > 0)}
+                >
+                  {busy && <Loader2 className="animate-spin" />}
+                  {busy
+                    ? mode === 'signin'
+                      ? '로그인 중…'
+                      : '메일 발송 중…'
+                    : mode === 'signin'
+                      ? '로그인'
+                      : mode === 'signup'
+                        ? '가입 메일 받기'
+                        : mode === 'resend'
+                          ? resendSeconds
+                            ? `${resendSeconds}초 후 재발송 가능`
+                            : '인증 메일 다시 받기'
+                          : '변경 메일 받기'}
+                  {!busy && <ArrowRight />}
+                </Button>
+              </fieldset>
             </form>
             <Link
               href="/guest"
@@ -691,6 +766,7 @@ function AuthPanel({
               <button
                 className="text-slate-600 hover:text-teal-700"
                 type="button"
+                disabled={busy}
                 onClick={() => {
                   setMode(mode === 'signup' ? 'signin' : 'signup');
                   setNotice(null);
@@ -701,6 +777,7 @@ function AuthPanel({
               <button
                 className="text-slate-500 underline-offset-4 hover:text-teal-700 hover:underline"
                 type="button"
+                disabled={busy}
                 onClick={() => {
                   setMode(mode === 'forgot' ? 'signin' : 'forgot');
                   setNotice(null);
@@ -709,6 +786,19 @@ function AuthPanel({
                 {mode === 'forgot'
                   ? '로그인으로 돌아가기'
                   : '비밀번호를 잊으셨나요?'}
+              </button>
+              <button
+                className="min-h-11 text-slate-500 hover:text-teal-700"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setMode(mode === 'resend' ? 'signin' : 'resend');
+                  setNotice(null);
+                }}
+              >
+                {mode === 'resend'
+                  ? '로그인으로 돌아가기'
+                  : '가입 인증 메일을 못 받으셨나요?'}
               </button>
             </div>
           </div>
@@ -733,6 +823,7 @@ function UpdatePasswordPanel({
 }) {
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
 
@@ -782,7 +873,7 @@ function UpdatePasswordPanel({
       <form className="space-y-4" onSubmit={updatePassword}>
         <Field label="새 비밀번호">
           <Input
-            type="password"
+            type={showPassword ? 'text' : 'password'}
             autoComplete="new-password"
             minLength={8}
             value={password}
@@ -792,7 +883,7 @@ function UpdatePasswordPanel({
         </Field>
         <Field label="새 비밀번호 확인">
           <Input
-            type="password"
+            type={showPassword ? 'text' : 'password'}
             autoComplete="new-password"
             minLength={8}
             value={confirmation}
@@ -800,6 +891,15 @@ function UpdatePasswordPanel({
             required
           />
         </Field>
+        <label className="flex min-h-11 items-center gap-2 text-sm text-slate-600">
+          <input
+            type="checkbox"
+            checked={showPassword}
+            onChange={(e) => setShowPassword(e.target.checked)}
+            className="size-4"
+          />
+          비밀번호 표시
+        </label>
         <Button type="submit" className="h-11 w-full" disabled={busy}>
           {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}
           {busy
@@ -851,10 +951,21 @@ function Field({
   hint?: string;
   children: React.ReactNode;
 }) {
+  const required = Children.toArray(children).some(
+    (child) =>
+      isValidElement<{ required?: boolean }>(child) && child.props.required,
+  );
   return (
     <label className="block">
       <span className="mb-1.5 flex items-center justify-between text-sm font-semibold text-slate-700">
-        {label}
+        <span>
+          {label}
+          {required && (
+            <small className="ml-1.5 text-xs font-normal text-teal-700">
+              필수
+            </small>
+          )}
+        </span>
         {hint && (
           <small className="text-xs font-normal text-slate-400">{hint}</small>
         )}
@@ -1160,19 +1271,26 @@ function AdminConsole({
 }) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
   const [view, setView] = useState<View>('dashboard');
-  type Destination = View | 'refresh' | 'logout';
-  const [pendingNavigation, setPendingNavigation] = useState<Destination | null>(null);
+  const [selectedInspection, setSelectedInspection] = useState('');
+  type Destination = View | 'refresh' | 'logout' | `inspection:${string}`;
+  const [pendingNavigation, setPendingNavigation] =
+    useState<Destination | null>(null);
   const performNavigation = (next: Destination) => {
     setNotice(null);
     if (next === 'refresh') void refresh();
     else if (next === 'logout') void supabase.auth.signOut();
-    else setView(next);
+    else if (next.startsWith('inspection:'))
+      setSelectedInspection(next.slice(11));
+    else setView(next as View);
   };
   const requestNavigation = (next: Destination) => {
     if (next === view) return;
     const state = draftNavigationState(window);
     if (state === 'busy') {
-      setNotice({ tone: 'info', text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.' });
+      setNotice({
+        tone: 'info',
+        text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.',
+      });
     } else if (state === 'dirty') setPendingNavigation(next);
     else performNavigation(next);
   };
@@ -1487,251 +1605,359 @@ function AdminConsole({
   };
 
   return (
-    <div className="min-h-screen bg-[#f2f5f6] text-slate-900">
-      <AlertDialog
-        open={pendingNavigation !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingNavigation(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>입력한 내용을 두고 이동할까요?</AlertDialogTitle>
-            <AlertDialogDescription>
-              저장하지 않은 입력이 있습니다. 이동하면 이 화면의 입력이
-              사라집니다.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>이어서 작성</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (pendingNavigation) {
-                  if (draftNavigationState(window) === 'busy')
-                    setNotice({ tone: 'info', text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.' });
-                  else performNavigation(pendingNavigation);
-                }
-                setPendingNavigation(null);
-              }}
-            >
-              저장하지 않고 이동
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between gap-4 px-4 md:px-6">
-          <Brand />
-          <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <strong className="block text-sm">{portalTitle(role)}</strong>
-              <span className="block text-xs text-slate-500">
-                {roleLabels[role]} · {session.user.email}
-              </span>
+    <InspectionSelectionProvider
+      value={{
+        id: selectedInspection,
+        select: (id) => {
+          if (!inspections.some((item) => item.id === id)) return false;
+          if (
+            id === resolveInspectionSelection(selectedInspection, inspections)
+          )
+            return false;
+          const clean = draftNavigationState(window) === 'clean';
+          requestNavigation(`inspection:${id}`);
+          return clean;
+        },
+      }}
+    >
+      <div className="min-h-screen bg-[#f2f5f6] text-slate-900">
+        <AlertDialog
+          open={pendingNavigation !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingNavigation(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                입력한 내용을 두고 이동할까요?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                저장하지 않은 입력이 있습니다. 이동하면 이 화면의 입력이
+                사라집니다.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>이어서 작성</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (pendingNavigation) {
+                    if (draftNavigationState(window) === 'busy')
+                      setNotice({
+                        tone: 'info',
+                        text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.',
+                      });
+                    else performNavigation(pendingNavigation);
+                  }
+                  setPendingNavigation(null);
+                }}
+              >
+                저장하지 않고 이동
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
+          <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between gap-4 px-4 md:px-6">
+            <Brand />
+            <div className="flex items-center gap-3">
+              <div className="hidden text-right sm:block">
+                <strong className="block text-sm">{portalTitle(role)}</strong>
+                <span className="block text-xs text-slate-500">
+                  {roleLabels[role]} · {session.user.email}
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="새로고침"
+                onClick={() => requestNavigation('refresh')}
+                disabled={loading}
+              >
+                <RefreshCw className={loading ? 'animate-spin' : ''} />
+                <span className="hidden md:inline">새로고침</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="로그아웃"
+                onClick={() => requestNavigation('logout')}
+              >
+                <LogOut /> <span className="hidden md:inline">로그아웃</span>
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="새로고침"
-              onClick={() => requestNavigation('refresh')}
-              disabled={loading}
-            >
-              <RefreshCw className={loading ? 'animate-spin' : ''} />
-              <span className="hidden md:inline">새로고침</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="로그아웃"
-              onClick={() => requestNavigation('logout')}
-            >
-              <LogOut /> <span className="hidden md:inline">로그아웃</span>
-            </Button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="sticky top-16 z-20 border-b bg-white px-3 py-2 md:hidden">
-        <label className="flex items-center gap-3">
-          <span className="shrink-0 text-sm font-bold text-slate-700">
-            메뉴
-          </span>
-          <select
-            className="h-11 min-w-0 flex-1 rounded-xl border bg-white px-3 text-base font-semibold text-slate-800"
-            value={view}
-            onChange={(event) => {
-              changeView(event.target.value as View);
-            }}
-            aria-label="작업 메뉴"
-          >
-            {visibleNavItems.map((item) => (
-              <option key={item.id} value={item.id}>
-                {portalLabel(role, item.id, item.label)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="mx-auto grid max-w-[1500px] md:grid-cols-[220px_1fr]">
-        <aside className="hidden bg-white p-4 md:block md:min-h-[calc(100vh-4rem)] md:border-r">
-          <nav className="flex flex-col gap-1">
-            {visibleNavItems.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    changeView(item.id);
-                  }}
-                  className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition md:w-full ${
-                    view === item.id
-                      ? 'bg-teal-50 text-teal-800'
-                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                  }`}
-                >
-                  <Icon className="size-4" />{' '}
+        <div className="sticky top-16 z-20 border-b bg-white px-3 py-2 md:hidden">
+          <label className="flex items-center gap-3">
+            <span className="shrink-0 text-sm font-bold text-slate-700">
+              메뉴
+            </span>
+            <select
+              className="h-11 min-w-0 flex-1 rounded-xl border bg-white px-3 text-base font-semibold text-slate-800"
+              value={view}
+              onChange={(event) => {
+                changeView(event.target.value as View);
+              }}
+              aria-label="작업 메뉴"
+            >
+              {visibleNavItems.map((item) => (
+                <option key={item.id} value={item.id}>
                   {portalLabel(role, item.id, item.label)}
-                </button>
-              );
-            })}
-          </nav>
-        </aside>
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
-        <main className="min-w-0 p-3 sm:p-4 md:p-6 lg:p-8">
-          <NoticeBar notice={notice} />
-          {loadedView !== view ? (
-            <div className="grid min-h-[55vh] place-items-center">
-              {loading ? (
-                <Loader2
-                  aria-label="자료 불러오는 중"
-                  className="size-7 animate-spin text-teal-600"
-                />
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void refresh()}
-                >
-                  다시 불러오기
-                </Button>
-              )}
-            </div>
-          ) : (
-            <>
-              {view === 'account' && (
-                <>
-                  <PageHeading eyebrow="ACCOUNT" title="내 계정" />
-                  <dl className="mb-5 flex flex-wrap gap-x-8 gap-y-3 rounded-2xl border bg-white p-5 text-sm">
-                    <div>
-                      <dt className="text-slate-500">이메일</dt>
-                      <dd className="mt-1 break-all font-semibold">
-                        {session.user.email}
-                      </dd>
+        <div className="mx-auto grid max-w-[1500px] md:grid-cols-[220px_1fr]">
+          <aside className="hidden bg-white p-4 md:block md:min-h-[calc(100vh-4rem)] md:border-r">
+            <nav className="flex flex-col gap-1">
+              {visibleNavItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      changeView(item.id);
+                    }}
+                    className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition md:w-full ${
+                      view === item.id
+                        ? 'bg-teal-50 text-teal-800'
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon className="size-4" />{' '}
+                    {portalLabel(role, item.id, item.label)}
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+
+          <main className="min-w-0 p-3 sm:p-4 md:p-6 lg:p-8">
+            <NoticeBar notice={notice} />
+            {loadedView !== view ? (
+              <div className="grid min-h-[55vh] place-items-center">
+                {loading ? (
+                  <Loader2
+                    aria-label="자료 불러오는 중"
+                    className="size-7 animate-spin text-teal-600"
+                  />
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void refresh()}
+                  >
+                    다시 불러오기
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <>
+                {canUpload &&
+                  [
+                    'files',
+                    'findings',
+                    'report-images',
+                    'assessments',
+                    'reports',
+                  ].includes(view) && (
+                    <section
+                      className="mb-5 rounded-2xl border bg-white p-4"
+                      aria-label="점검 작업 순서"
+                    >
+                      <p className="mb-3 text-sm font-semibold">
+                        {inspections.find(
+                          (i) =>
+                            i.id ===
+                            resolveInspectionSelection(
+                              selectedInspection,
+                              inspections,
+                            ),
+                        )?.inspection_code || '점검을 선택하세요'}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {(
+                          [
+                            ['files', '1. 사진 업로드'],
+                            ['findings', '2. 소견 판정'],
+                            ['report-images', '3. 보고서 사진'],
+                            ['reports', '4. 보고서'],
+                            ['assessments', '경제성 분석 (선택)'],
+                          ] as const
+                        ).map(([target, label]) => (
+                          <Button
+                            key={target}
+                            type="button"
+                            size="sm"
+                            variant={view === target ? 'default' : 'outline'}
+                            aria-current={view === target ? 'step' : undefined}
+                            onClick={() => changeView(target)}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                {view === 'account' && (
+                  <>
+                    <PageHeading eyebrow="ACCOUNT" title="내 계정" />
+                    <dl className="mb-5 flex flex-wrap gap-x-8 gap-y-3 rounded-2xl border bg-white p-5 text-sm">
+                      <div>
+                        <dt className="text-slate-500">이메일</dt>
+                        <dd className="mt-1 break-all font-semibold">
+                          {session.user.email}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-slate-500">역할</dt>
+                        <dd className="mt-1 font-semibold">
+                          {roleLabels[role]}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="mb-5">
+                      <AccountProfile
+                        supabase={supabase}
+                        organizationId={organizationId}
+                      />
                     </div>
-                    <div>
-                      <dt className="text-slate-500">역할</dt>
-                      <dd className="mt-1 font-semibold">{roleLabels[role]}</dd>
-                    </div>
-                  </dl>
-                  <div className="mb-5">
-                    <AccountProfile
-                      supabase={supabase}
-                      organizationId={organizationId}
-                    />
-                  </div>
-                  <UpdatePasswordPanel supabase={supabase} embedded />
-                </>
-              )}
-              {view === 'dashboard' && (
-                <DashboardView {...shared} setView={changeView} role={role} />
-              )}
-              {view === 'plants' && (
-                <PlantsView
-                  {...shared}
-                  canWrite={canOperate || isRequester}
-                  requesterMode={isRequester}
-                />
-              )}
-              {view === 'inspections' && (
-                <InspectionsView
-                  {...shared}
-                  canCreate={canCreateInspection}
-                  canUpdate={canUpdateInspection}
-                  requesterMode={isRequester}
-                  expertMode={isExpert}
-                />
-              )}
-              {view === 'files' && (
-                <FilesView {...shared} canWrite={canUpload} />
-              )}
-              {view === 'report-images' && canUpload && (
-                <ReportImagesView {...shared} isOwner={isOwner} />
-              )}
-              {view === 'findings' && (
-                <FindingsEditorView {...shared} canWrite={canReview} />
-              )}
-              {view === 'assessments' && (
-                <AssessmentsView {...shared} isOwner={isOwner} />
-              )}
-              {view === 'calculation-settings' && isOwner && (
-                <CalculationSettingsView {...shared} />
-              )}
-              {view === 'reports' && (
-                <ReportsView
-                  {...shared}
-                  canCreate={canCreateReport}
-                  canApprove={canApprove}
-                  requesterMode={isRequester}
-                />
-              )}
-              {view === 'maintenance' && (
-                <MaintenanceView {...shared} canWrite={canMaintain} />
-              )}
-              {view === 'recycling' && (
-                <RecyclingView {...shared} isOwner={isOwner} />
-              )}
-              {view === 'partners' && (
-                <PartnerQuotesView
-                  {...shared}
-                  canWrite={isOwner}
-                  requesterMode={isRequester}
-                />
-              )}
-              {view === 'members' && (
-                <MembersView
-                  {...shared}
-                  workspace={workspace}
-                  setWorkspace={setWorkspace}
-                  canWrite={isOwner}
-                />
-              )}
-              {view === 'service-settings' && isOwner && (
-                <ServiceSettingsView
-                  supabase={supabase}
-                  organizationId={organizationId}
-                  onPublished={() => window.location.assign('/login')}
-                />
-              )}
-              {view === 'customers' && isOwner && (
-                <CustomersView
-                  supabase={supabase}
-                  organizationId={organizationId}
-                  plants={plants}
-                />
-              )}
-              {view === 'audit' && isOwner && (
-                <AuditView
-                  supabase={supabase}
-                  organizationId={organizationId}
-                />
-              )}
-            </>
-          )}
-        </main>
+                    <UpdatePasswordPanel supabase={supabase} embedded />
+                  </>
+                )}
+                {view === 'dashboard' && (
+                  <DashboardView {...shared} setView={changeView} role={role} />
+                )}
+                {view === 'plants' && (
+                  <PlantsView
+                    {...shared}
+                    canWrite={canOperate || isRequester}
+                    requesterMode={isRequester}
+                  />
+                )}
+                {view === 'inspections' && (
+                  <InspectionsView
+                    {...shared}
+                    canCreate={canCreateInspection}
+                    canUpdate={canUpdateInspection}
+                    requesterMode={isRequester}
+                    expertMode={isExpert}
+                  />
+                )}
+                {view === 'files' && (
+                  <FilesView
+                    key={resolveInspectionSelection(
+                      selectedInspection,
+                      inspections,
+                    )}
+                    {...shared}
+                    canWrite={canUpload}
+                  />
+                )}
+                {view === 'report-images' && canUpload && (
+                  <ReportImagesView
+                    key={resolveInspectionSelection(
+                      selectedInspection,
+                      inspections,
+                    )}
+                    {...shared}
+                    isOwner={isOwner}
+                  />
+                )}
+                {view === 'findings' && (
+                  <FindingsEditorView
+                    key={resolveInspectionSelection(
+                      selectedInspection,
+                      inspections,
+                    )}
+                    {...shared}
+                    canWrite={canReview}
+                  />
+                )}
+                {view === 'assessments' && (
+                  <AssessmentsView
+                    key={resolveInspectionSelection(
+                      selectedInspection,
+                      inspections,
+                    )}
+                    {...shared}
+                    isOwner={isOwner}
+                  />
+                )}
+                {view === 'calculation-settings' && isOwner && (
+                  <CalculationSettingsView {...shared} />
+                )}
+                {view === 'reports' && (
+                  <ReportsView
+                    key={resolveInspectionSelection(
+                      selectedInspection,
+                      inspections,
+                    )}
+                    {...shared}
+                    canCreate={canCreateReport}
+                    canApprove={canApprove}
+                    requesterMode={isRequester}
+                  />
+                )}
+                {view === 'maintenance' && (
+                  <MaintenanceView
+                    key={resolveInspectionSelection(
+                      selectedInspection,
+                      inspections,
+                    )}
+                    {...shared}
+                    canWrite={canMaintain}
+                  />
+                )}
+                {view === 'recycling' && (
+                  <RecyclingView {...shared} isOwner={isOwner} />
+                )}
+                {view === 'partners' && (
+                  <PartnerQuotesView
+                    {...shared}
+                    canWrite={isOwner}
+                    requesterMode={isRequester}
+                  />
+                )}
+                {view === 'members' && (
+                  <MembersView
+                    {...shared}
+                    workspace={workspace}
+                    setWorkspace={setWorkspace}
+                    canWrite={isOwner}
+                  />
+                )}
+                {view === 'service-settings' && isOwner && (
+                  <ServiceSettingsView
+                    supabase={supabase}
+                    organizationId={organizationId}
+                    onPublished={() => window.location.assign('/login')}
+                  />
+                )}
+                {view === 'customers' && isOwner && (
+                  <CustomersView
+                    supabase={supabase}
+                    organizationId={organizationId}
+                    plants={plants}
+                  />
+                )}
+                {view === 'audit' && isOwner && (
+                  <AuditView
+                    supabase={supabase}
+                    organizationId={organizationId}
+                  />
+                )}
+              </>
+            )}
+          </main>
+        </div>
       </div>
-    </div>
+    </InspectionSelectionProvider>
   );
 }
 
@@ -2088,31 +2314,55 @@ function PlantsView(
   props: SharedProps & { canWrite: boolean; requesterMode: boolean },
 ) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingUpdatedAt, setEditingUpdatedAt] = useState('');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [address, setAddress] = useState('');
   const [capacity, setCapacity] = useState('');
   const [commissionedOn, setCommissionedOn] = useState('');
-  const [operatorType, setOperatorType] = useState('개인');
+  const [operatorType, setOperatorType] = useState('');
   const [moduleModel, setModuleModel] = useState('');
   const [inverterModel, setInverterModel] = useState('');
   const [dataUseConsent, setDataUseConsent] = useState(false);
   const [requesterId, setRequesterId] = useState('');
   const [busy, setBusy] = useState(false);
-  const draft = JSON.stringify([name, code, address, capacity, commissionedOn, operatorType, moduleModel, inverterModel, dataUseConsent, requesterId]);
+  const draft = JSON.stringify([
+    name,
+    code,
+    address,
+    capacity,
+    commissionedOn,
+    operatorType,
+    moduleModel,
+    inverterModel,
+    dataUseConsent,
+    requesterId,
+  ]);
   const baseline = useRef(draft);
   useDraftProtection(props.canWrite && draft !== baseline.current, busy);
   const saveLock = useRef(false);
 
   function reset() {
-    baseline.current = JSON.stringify(['', '', '', '', '', '개인', '', '', false, '']);
+    baseline.current = JSON.stringify([
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      false,
+      '',
+    ]);
     setEditingId(null);
+    setEditingUpdatedAt('');
     setName('');
     setCode('');
     setAddress('');
     setCapacity('');
     setCommissionedOn('');
-    setOperatorType('개인');
+    setOperatorType('');
     setModuleModel('');
     setInverterModel('');
     setDataUseConsent(false);
@@ -2121,18 +2371,30 @@ function PlantsView(
 
   function edit(plant: Plant) {
     setEditingId(plant.id);
+    setEditingUpdatedAt(plant.updated_at);
     setName(plant.name);
     setCode(plant.code ?? '');
     setAddress(plant.address ?? '');
     setCapacity(plant.capacity_kw == null ? '' : String(plant.capacity_kw));
     setCommissionedOn(plant.commissioned_on ?? '');
     const metadata = jsonRecord(plant.metadata);
-    setOperatorType(jsonText(metadata.operator_type, '개인'));
+    setOperatorType(jsonText(metadata.operator_type));
     setModuleModel(jsonText(metadata.module_model));
     setInverterModel(jsonText(metadata.inverter_model));
     setDataUseConsent(Boolean(metadata.data_use_consent_at));
     setRequesterId('');
-    baseline.current = JSON.stringify([plant.name, plant.code ?? '', plant.address ?? '', plant.capacity_kw == null ? '' : String(plant.capacity_kw), plant.commissioned_on ?? '', jsonText(metadata.operator_type, '개인'), jsonText(metadata.module_model), jsonText(metadata.inverter_model), Boolean(metadata.data_use_consent_at), '']);
+    baseline.current = JSON.stringify([
+      plant.name,
+      plant.code ?? '',
+      plant.address ?? '',
+      plant.capacity_kw == null ? '' : String(plant.capacity_kw),
+      plant.commissioned_on ?? '',
+      jsonText(metadata.operator_type),
+      jsonText(metadata.module_model),
+      jsonText(metadata.inverter_model),
+      Boolean(metadata.data_use_consent_at),
+      '',
+    ]);
   }
 
   async function save(event: SyntheticEvent<HTMLFormElement>) {
@@ -2158,16 +2420,28 @@ function PlantsView(
         data_use_consent_version: 'operational-registration-v1',
       } as Json;
       const result = props.requesterMode
-        ? await props.supabase.rpc('create_requester_plant_with_details', {
-            p_name: name.trim(),
-            p_address: address.trim(),
-            p_capacity_kw: Number(capacity),
-            p_commissioned_on: commissionedOn,
-            p_operator_type: operatorType.trim(),
-            p_module_model: moduleModel.trim(),
-            p_inverter_model: inverterModel.trim(),
-            p_data_use_consent: dataUseConsent,
-          })
+        ? editingId
+          ? await props.supabase.rpc('update_requester_plant', {
+              p_plant_id: editingId,
+              p_expected_updated_at: editingUpdatedAt,
+              p_name: name.trim(),
+              p_address: address.trim(),
+              p_capacity_kw: capacity ? Number(capacity) : null,
+              p_commissioned_on: commissionedOn || null,
+              p_operator_type: operatorType,
+              p_module_model: moduleModel.trim(),
+              p_inverter_model: inverterModel.trim(),
+            })
+          : await props.supabase.rpc('create_requester_plant_with_details', {
+              p_name: name.trim(),
+              p_address: address.trim(),
+              p_capacity_kw: capacity ? Number(capacity) : null,
+              p_commissioned_on: commissionedOn || null,
+              p_operator_type: operatorType.trim(),
+              p_module_model: moduleModel.trim(),
+              p_inverter_model: inverterModel.trim(),
+              p_data_use_consent: dataUseConsent,
+            })
         : editingId
           ? await props.supabase
               .from('plants')
@@ -2257,150 +2531,162 @@ function PlantsView(
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <fieldset disabled={busy} className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-bold">
-                {editingId
-                  ? '발전소 수정'
-                  : props.requesterMode
-                    ? '내 발전소 등록'
-                    : '새 발전소'}
-              </h2>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={reset}
-                  className="text-xs text-slate-500 underline"
-                >
-                  취소
-                </button>
-              )}
-            </div>
-            {!props.canWrite && <ReadOnlyNote />}
-            <Field label="발전소명">
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={!props.canWrite}
-                required
-              />
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {!props.requesterMode && (
-                <Field label="관리 코드">
-                  <Input
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                    disabled={!props.canWrite}
-                    placeholder="PLANT-001"
-                  />
-                </Field>
-              )}
-              <Field label="설비용량(kW)">
+              <div className="flex items-center justify-between">
+                <h2 className="font-bold">
+                  {editingId
+                    ? '발전소 수정'
+                    : props.requesterMode
+                      ? '내 발전소 등록'
+                      : '새 발전소'}
+                </h2>
+                {editingId && (
+                  <button
+                    type="button"
+                    onClick={reset}
+                    className="text-xs text-slate-500 underline"
+                  >
+                    취소
+                  </button>
+                )}
+              </div>
+              {!props.canWrite && <ReadOnlyNote />}
+              <Field label="발전소명">
                 <Input
-                  type="number"
-                  min="0"
-                  step="0.001"
-                  value={capacity}
-                  onChange={(e) => setCapacity(e.target.value)}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                   disabled={!props.canWrite}
-                  required={props.requesterMode}
+                  required
                 />
               </Field>
-            </div>
-            <Field label="주소">
-              <Input
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                disabled={!props.canWrite}
-              />
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="운영 형태">
-                <select
-                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
-                  value={operatorType}
-                  onChange={(event) => setOperatorType(event.target.value)}
-                  disabled={!props.canWrite}
-                >
-                  <option value="개인">개인</option>
-                  <option value="법인">법인</option>
-                  <option value="협동조합">협동조합</option>
-                  <option value="공공">공공</option>
-                  <option value="기타">기타</option>
-                </select>
-              </Field>
-              <Field label="모듈 모델" hint="알면 입력">
-                <Input
-                  value={moduleModel}
-                  onChange={(event) => setModuleModel(event.target.value)}
-                  disabled={!props.canWrite}
+              <details
+                open={editingId ? true : undefined}
+                className="rounded-xl border p-3"
+              >
+                <summary className="cursor-pointer text-sm font-medium text-slate-600">
+                  설비 상세정보 (선택·나중에 보완 가능)
+                </summary>
+                <div className="mt-4 space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {!props.requesterMode && (
+                      <Field label="관리 코드">
+                        <Input
+                          value={code}
+                          onChange={(e) => setCode(e.target.value)}
+                          disabled={!props.canWrite}
+                          placeholder="PLANT-001"
+                        />
+                      </Field>
+                    )}
+                    <Field label="설비용량(kW)" hint="선택·경제성 분석 시 필요">
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.001"
+                        value={capacity}
+                        onChange={(e) => setCapacity(e.target.value)}
+                        disabled={!props.canWrite}
+                      />
+                    </Field>
+                  </div>
+                  <Field label="주소">
+                    <Input
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      disabled={!props.canWrite}
+                    />
+                  </Field>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="운영주체 구분">
+                      <select
+                        className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+                        value={operatorType}
+                        onChange={(event) =>
+                          setOperatorType(event.target.value)
+                        }
+                        disabled={!props.canWrite}
+                      >
+                        <option value="">나중에 입력</option>
+                        <option value="개인">개인</option>
+                        <option value="법인">법인</option>
+                        <option value="협동조합">협동조합</option>
+                        <option value="공공">공공</option>
+                        <option value="기타">기타</option>
+                      </select>
+                    </Field>
+                    <Field label="모듈 모델" hint="알면 입력">
+                      <Input
+                        value={moduleModel}
+                        onChange={(event) => setModuleModel(event.target.value)}
+                        disabled={!props.canWrite}
+                      />
+                    </Field>
+                  </div>
+                  <Field label="인버터 모델" hint="알면 입력">
+                    <Input
+                      value={inverterModel}
+                      onChange={(event) => setInverterModel(event.target.value)}
+                      disabled={!props.canWrite}
+                    />
+                  </Field>
+                  {!props.requesterMode && !editingId && (
+                    <Field label="의뢰인 연결" hint="선택 사항">
+                      <select
+                        className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                        value={requesterId}
+                        onChange={(e) => setRequesterId(e.target.value)}
+                        disabled={!props.canWrite}
+                      >
+                        <option value="">나중에 연결</option>
+                        {props.members
+                          .filter(
+                            (member) =>
+                              member.role === 'client' &&
+                              member.status === 'active',
+                          )
+                          .map((member) => (
+                            <option key={member.user_id} value={member.user_id}>
+                              {props.profiles[member.user_id]?.display_name ||
+                                props.profiles[member.user_id]?.email ||
+                                member.user_id}
+                            </option>
+                          ))}
+                      </select>
+                    </Field>
+                  )}
+                  <Field label="상업운전 시작일" hint="모르면 나중에 입력">
+                    <Input
+                      type="date"
+                      value={commissionedOn}
+                      onChange={(e) => setCommissionedOn(e.target.value)}
+                      disabled={!props.canWrite}
+                    />
+                  </Field>
+                </div>
+              </details>
+              <label className="flex items-start gap-3 rounded-xl bg-teal-50 p-3 text-sm leading-6 text-teal-950">
+                <input
+                  type="checkbox"
+                  className="mt-1 size-5 shrink-0 accent-teal-600"
+                  checked={dataUseConsent}
+                  onChange={(event) => setDataUseConsent(event.target.checked)}
+                  disabled={
+                    !props.canWrite || Boolean(editingId && dataUseConsent)
+                  }
+                  required
                 />
-              </Field>
-            </div>
-            <Field label="인버터 모델" hint="알면 입력">
-              <Input
-                value={inverterModel}
-                onChange={(event) => setInverterModel(event.target.value)}
-                disabled={!props.canWrite}
-              />
-            </Field>
-            {!props.requesterMode && !editingId && (
-              <Field label="의뢰인 연결" hint="선택 사항">
-                <select
-                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                  value={requesterId}
-                  onChange={(e) => setRequesterId(e.target.value)}
-                  disabled={!props.canWrite}
-                >
-                  <option value="">나중에 연결</option>
-                  {props.members
-                    .filter(
-                      (member) =>
-                        member.role === 'client' && member.status === 'active',
-                    )
-                    .map((member) => (
-                      <option key={member.user_id} value={member.user_id}>
-                        {props.profiles[member.user_id]?.display_name ||
-                          props.profiles[member.user_id]?.email ||
-                          member.user_id}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-            )}
-            <Field label="상업운전 시작일">
-              <Input
-                type="date"
-                value={commissionedOn}
-                onChange={(e) => setCommissionedOn(e.target.value)}
-                disabled={!props.canWrite}
-                required={props.requesterMode}
-              />
-            </Field>
-            <label className="flex items-start gap-3 rounded-xl bg-teal-50 p-3 text-sm leading-6 text-teal-950">
-              <input
-                type="checkbox"
-                className="mt-1 size-5 shrink-0 accent-teal-600"
-                checked={dataUseConsent}
-                onChange={(event) => setDataUseConsent(event.target.checked)}
-                disabled={
-                  !props.canWrite || Boolean(editingId && dataUseConsent)
-                }
-                required
-              />
-              <span>
-                점검 접수와 보고서 작성을 위해 발전소 정보와 업로드 자료를
-                처리하는 데 동의합니다.
-              </span>
-            </label>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={!props.canWrite || !dataUseConsent || busy}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : <Plus />}
-              {editingId ? '변경 저장' : '발전소 등록'}
-            </Button>
+                <span>
+                  점검 접수와 보고서 작성을 위해 발전소 정보와 업로드 자료를
+                  처리하는 데 동의합니다.
+                </span>
+              </label>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={!props.canWrite || !dataUseConsent || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" /> : <Plus />}
+                {editingId ? '변경 저장' : '발전소 등록'}
+              </Button>
             </fieldset>
           </form>
         )}
@@ -2442,7 +2728,7 @@ function PlantsView(
                     ) : null;
                   })()}
                 </div>
-                {props.canWrite && !props.requesterMode && (
+                {props.canWrite && (
                   <Button
                     variant="outline"
                     size="sm"
@@ -2494,7 +2780,15 @@ function InspectionsView(
   const [busy, setBusy] = useState(false);
 
   const effectivePlantId = plantId || props.plants[0]?.id || '';
-  const draft = JSON.stringify([effectivePlantId, code, purpose, scheduledAt, dueAt, notes, expertId]);
+  const draft = JSON.stringify([
+    effectivePlantId,
+    code,
+    purpose,
+    scheduledAt,
+    dueAt,
+    notes,
+    expertId,
+  ]);
   const baseline = useRef(draft);
   useDraftProtection(props.canCreate && draft !== baseline.current, busy);
   const createLock = useRef(false);
@@ -2530,7 +2824,15 @@ function InspectionsView(
       if (error) throw error;
       props.setNotice({ tone: 'success', text: '점검을 접수했습니다.' });
       const nextCode = `INS-${Date.now().toString().slice(-8)}`;
-      baseline.current = JSON.stringify([effectivePlantId, nextCode, purpose, scheduledAt, dueAt, '', expertId]);
+      baseline.current = JSON.stringify([
+        effectivePlantId,
+        nextCode,
+        purpose,
+        scheduledAt,
+        dueAt,
+        '',
+        expertId,
+      ]);
       setCode(nextCode);
       setNotes('');
       await props.refresh();
@@ -2605,101 +2907,101 @@ function InspectionsView(
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <fieldset disabled={busy} className="space-y-4">
-            <h2 className="font-bold">
-              {props.requesterMode ? '새 점검 요청' : '새 점검 접수'}
-            </h2>
-            {!props.canCreate && <ReadOnlyNote />}
-            {props.plants.length === 0 && (
-              <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">
-                먼저 발전소를 등록해야 합니다.
-              </p>
-            )}
-            <Field label="대상 발전소">
-              <select
-                className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                value={effectivePlantId}
-                onChange={(e) => setPlantId(e.target.value)}
-                disabled={!props.canCreate}
-              >
-                {props.plants.map((plant) => (
-                  <option key={plant.id} value={plant.id}>
-                    {plant.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {!props.requesterMode && (
-              <Field label="점검 번호">
-                <Input
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
+              <h2 className="font-bold">
+                {props.requesterMode ? '새 점검 요청' : '새 점검 접수'}
+              </h2>
+              {!props.canCreate && <ReadOnlyNote />}
+              {props.plants.length === 0 && (
+                <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">
+                  먼저 발전소를 등록해야 합니다.
+                </p>
+              )}
+              <Field label="대상 발전소">
+                <select
+                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={effectivePlantId}
+                  onChange={(e) => setPlantId(e.target.value)}
                   disabled={!props.canCreate}
-                  required
+                >
+                  {props.plants.map((plant) => (
+                    <option key={plant.id} value={plant.id}>
+                      {plant.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {!props.requesterMode && (
+                <Field label="점검 번호">
+                  <Input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    disabled={!props.canCreate}
+                    required
+                  />
+                </Field>
+              )}
+              <Field label="점검 목적">
+                <Input
+                  value={purpose}
+                  onChange={(e) => setPurpose(e.target.value)}
+                  disabled={!props.canCreate}
                 />
               </Field>
-            )}
-            <Field label="점검 목적">
-              <Input
-                value={purpose}
-                onChange={(e) => setPurpose(e.target.value)}
-                disabled={!props.canCreate}
-              />
-            </Field>
-            {!props.requesterMode && (
-              <>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="예정 일시">
-                    <Input
-                      type="datetime-local"
-                      value={scheduledAt}
-                      onChange={(e) => setScheduledAt(e.target.value)}
+              {!props.requesterMode && (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="예정 일시">
+                      <Input
+                        type="datetime-local"
+                        value={scheduledAt}
+                        onChange={(e) => setScheduledAt(e.target.value)}
+                        disabled={!props.canCreate}
+                      />
+                    </Field>
+                    <Field label="완료 목표">
+                      <Input
+                        type="datetime-local"
+                        value={dueAt}
+                        onChange={(e) => setDueAt(e.target.value)}
+                        disabled={!props.canCreate}
+                      />
+                    </Field>
+                  </div>
+                  <Field label="담당 전문가">
+                    <select
+                      className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                      value={expertId}
+                      onChange={(e) => setExpertId(e.target.value)}
                       disabled={!props.canCreate}
-                    />
+                    >
+                      <option value="">미배정</option>
+                      {activeExperts.map((member) => (
+                        <option key={member.user_id} value={member.user_id}>
+                          {props.profiles[member.user_id]?.display_name ||
+                            props.profiles[member.user_id]?.email ||
+                            member.user_id}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
-                  <Field label="완료 목표">
-                    <Input
-                      type="datetime-local"
-                      value={dueAt}
-                      onChange={(e) => setDueAt(e.target.value)}
-                      disabled={!props.canCreate}
-                    />
-                  </Field>
-                </div>
-                <Field label="담당 전문가">
-                  <select
-                    className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                    value={expertId}
-                    onChange={(e) => setExpertId(e.target.value)}
-                    disabled={!props.canCreate}
-                  >
-                    <option value="">미배정</option>
-                    {activeExperts.map((member) => (
-                      <option key={member.user_id} value={member.user_id}>
-                        {props.profiles[member.user_id]?.display_name ||
-                          props.profiles[member.user_id]?.email ||
-                          member.user_id}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </>
-            )}
-            <Field label="현장 메모">
-              <Textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                disabled={!props.canCreate}
-                rows={3}
-              />
-            </Field>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={!props.canCreate || !effectivePlantId || busy}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : <Plus />}
-              {props.requesterMode ? '점검 요청' : '점검 접수'}
-            </Button>
+                </>
+              )}
+              <Field label="현장 메모">
+                <Textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  disabled={!props.canCreate}
+                  rows={3}
+                />
+              </Field>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={!props.canCreate || !effectivePlantId || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" /> : <Plus />}
+                {props.requesterMode ? '점검 요청' : '점검 접수'}
+              </Button>
             </fieldset>
           </form>
         )}
@@ -2818,7 +3120,9 @@ async function imageValues(file: File) {
 }
 
 function FilesView(props: SharedProps & { canWrite: boolean }) {
-  const [inspectionId, setInspectionId] = useState('');
+  const [inspectionId, setInspectionId] = useInspectionSelection(
+    props.inspections,
+  );
   const [kind, setKind] = useState<'thermal_original' | 'visible_original'>(
     'thermal_original',
   );
@@ -2836,6 +3140,10 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   const [runAnalysis, setRunAnalysis] = useState(true);
   const [busy, setBusy] = useState(false);
   const [analyzingFileId, setAnalyzingFileId] = useState<string | null>(null);
+  useDraftProtection(
+    queue.some((item) => item.status !== 'done'),
+    busy || Boolean(analyzingFileId),
+  );
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(
     null,
   );
@@ -3071,7 +3379,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
               value={effectiveInspectionId}
               onChange={(e) => {
-                setInspectionId(e.target.value);
+                if (!setInspectionId(e.target.value)) return;
                 setQueue([]);
               }}
               disabled={!props.canWrite || busy || queue.length > 0}
@@ -3292,7 +3600,9 @@ function ReportsView(
     requesterMode: boolean;
   },
 ) {
-  const [inspectionId, setInspectionId] = useState('');
+  const [inspectionId, setInspectionId] = useInspectionSelection(
+    props.inspections,
+  );
   const [title, setTitle] = useState('태양광 발전설비 열화상 점검 보고서');
   const [busy, setBusy] = useState(false);
   const [transitioningId, setTransitioningId] = useState<string | null>(null);
@@ -3371,6 +3681,11 @@ function ReportsView(
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <h2 className="font-bold">보고서 초안 만들기</h2>
+            <p className="text-sm leading-6 text-slate-600">
+              사진·소견 판정 후 경제성 자료 없이도 검토를 요청할 수 있습니다.
+              발전량·수리비는 경제성 분석이 필요할 때 추가하세요. 발행 후 추가한
+              자료는 새 보고서 버전으로 반영합니다.
+            </p>
             <Field label="점검">
               <select
                 className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
@@ -3558,7 +3873,9 @@ function ReportsView(
 }
 
 function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
-  const [inspectionId, setInspectionId] = useState('');
+  const [inspectionId, setInspectionId] = useInspectionSelection(
+    props.inspections,
+  );
   const [title, setTitle] = useState('열화상 이상 후보 현장 점검');
   const [priority, setPriority] = useState('normal');
   const [vendor, setVendor] = useState('');

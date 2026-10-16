@@ -38,6 +38,9 @@ export function AccountProfile({
   const [terms, setTerms] = useState(false);
   const [privacy, setPrivacy] = useState(false);
   const [error, setError] = useState('');
+  const [errorField, setErrorField] = useState<keyof AccountDetails | null>(
+    null,
+  );
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(!initial);
@@ -91,6 +94,19 @@ export function AccountProfile({
     const p = validateAccountDetails(details, isClient);
     if (p) {
       setError(p);
+      const key: keyof AccountDetails = p.includes('연락처')
+        ? 'phone'
+        : p.includes('상호')
+          ? 'business_name'
+          : p.includes('대표자')
+            ? 'representative'
+            : p.includes('등록번호')
+              ? 'business_number'
+              : 'name';
+      setErrorField(key);
+      (
+        e.currentTarget.elements.namedItem(key) as HTMLInputElement | null
+      )?.focus();
       return;
     }
     if (data.policy && !alreadyAccepted && (!terms || !privacy)) {
@@ -100,6 +116,7 @@ export function AccountProfile({
     lock.current = true;
     setBusy(true);
     setError('');
+    setErrorField(null);
     setMessage('');
     try {
       await serviceRpc(supabase, 'complete_service_profile', {
@@ -129,8 +146,20 @@ export function AccountProfile({
   ) {
     return (
       <label className="block space-y-2 text-sm font-medium">
-        <span>{label}</span>
+        <span>
+          {label}
+          {key !== 'representative' && (
+            <small className="ml-2 text-xs font-normal text-teal-700">
+              필수
+            </small>
+          )}
+        </span>
         <Input
+          name={key}
+          aria-invalid={errorField === key}
+          aria-describedby={
+            errorField === key ? `profile-${key}-error` : undefined
+          }
           autoComplete={
             key === 'name' ? 'name' : key === 'phone' ? 'tel' : 'off'
           }
@@ -138,11 +167,22 @@ export function AccountProfile({
             key === 'phone' || key === 'business_number' ? 'tel' : undefined
           }
           type={opts?.type ?? 'text'}
-          required
+          required={key !== 'representative'}
           maxLength={opts?.max ?? 160}
           value={details[key] ?? ''}
-          onChange={(e) => setDetails({ ...details, [key]: e.target.value })}
+          onChange={(e) => {
+            setDetails({ ...details, [key]: e.target.value });
+            if (errorField === key) setErrorField(null);
+          }}
         />
+        {errorField === key && (
+          <small
+            id={`profile-${key}-error`}
+            className="block text-xs text-red-700"
+          >
+            {error}
+          </small>
+        )}
       </label>
     );
   }
@@ -214,7 +254,11 @@ export function AccountProfile({
                   <div className="space-y-4 rounded-xl bg-slate-50 p-4">
                     {field('business_name', '상호 / 법인명')}
                     {field('business_number', '사업자등록번호', { max: 12 })}
-                    {field('representative', '대표자 이름', { max: 80 })}
+                    {field(
+                      'representative',
+                      '대표자 이름 (선택·나중에 입력 가능)',
+                      { max: 80 },
+                    )}
                     <Button
                       type="button"
                       variant="outline"

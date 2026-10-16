@@ -16,6 +16,10 @@ const dataUrl = (source) =>
 const labels = dataUrl(compile('../lib/finding-labels.ts'));
 const visuals = dataUrl(compile('../lib/report-visuals.ts'));
 const source = compile('../lib/report-pdf.ts')
+  .replace(
+    /from ['"].\/payback-format['"]/g,
+    `from '${dataUrl(compile('../lib/payback-format.ts'))}'`,
+  )
   .replace(/from ['"]pdf-lib['"]/g, `from '${import.meta.resolve('pdf-lib')}'`)
   .replace(
     /from ['"]@pdf-lib\/fontkit['"]/g,

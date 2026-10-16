@@ -1,5 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { useInspectionSelection } from '@/lib/inspection-context';
+import { useDraftProtection } from '@/lib/use-draft-protection';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,8 +21,7 @@ export function ReportImagesView({
   files: Tables<'inspection_files'>[];
   isOwner: boolean;
 }) {
-  const [inspection, setInspection] = useState('');
-  const inspectionId = inspection || inspections[0]?.id || '';
+  const [inspectionId, setInspection] = useInspectionSelection(inspections);
   const [sourceId, setSourceId] = useState('');
   const [photos, setPhotos] = useState<ReportImage[]>([]);
   const [photosLoading, setPhotosLoading] = useState(true);
@@ -37,6 +38,7 @@ export function ReportImagesView({
     [notice, setNotice] = useState('');
   const [revision, setRevision] = useState(0);
   const [verified, setVerified] = useState<Record<string, boolean>>({});
+  useDraftProtection(Boolean(sourceId || caption || masks.length), busy);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestId = useRef('');
   const sources = files.filter(
@@ -216,7 +218,7 @@ export function ReportImagesView({
           value={inspectionId}
           disabled={busy}
           onChange={(e) => {
-            setInspection(e.target.value);
+            if (!setInspection(e.target.value)) return;
             selectSource('');
             setVerified({});
             setPhotos([]);

@@ -54,6 +54,24 @@ test('business checksum detects typos without claiming identity verification', (
   for (const n of ['1234567890', '1', '', null])
     assert.equal(businessNumberValid(n ?? ''), false);
 });
+test('business contacts may provide representative later without skipping company identity checks', () => {
+  const d = {
+    name: '가상 담당자',
+    phone: '01012345678',
+    kind: 'corporation',
+    business_name: '가상 업체',
+    business_number: '1234567891',
+  };
+  assert.equal(validateAccountDetails(d, true), null);
+  assert.match(
+    validateAccountDetails({ ...d, representative: '가'.repeat(81) }, true),
+    /80자/,
+  );
+  assert.match(
+    validateAccountDetails({ ...d, business_number: '' }, true),
+    /등록번호/,
+  );
+});
 test('profile validation rejects missing contacts and unsupported customer types', () => {
   assert.match(
     validateAccountDetails({ name: '', phone: '01012345678' }, false),

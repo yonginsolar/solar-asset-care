@@ -17,6 +17,10 @@ const dataUrl = (code) =>
 const labels = dataUrl(compile('../lib/finding-labels.ts'));
 const visuals = dataUrl(compile('../lib/report-visuals.ts'));
 const source = compile('../lib/report-pdf.ts')
+  .replace(
+    /from ['"].\/payback-format['"]/g,
+    `from '${dataUrl(compile('../lib/payback-format.ts'))}'`,
+  )
   .replace(/from ['"]pdf-lib['"]/g, `from '${import.meta.resolve('pdf-lib')}'`)
   .replace(
     /from ['"]@pdf-lib\/fontkit['"]/g,
@@ -135,6 +139,43 @@ test('unverified fonts and unsupported snapshots cannot be archived', async () =
       renderReportPdf(
         report,
         { ...snapshot, content: { ...snapshot.content, schemaVersion: 2 } },
+        font,
+      ),
+    /형식/,
+  );
+});
+test('photo-only snapshot renders without financial data, dates or invented readings', async () => {
+  const content = {
+    ...snapshot.content,
+    schemaVersion: 2,
+    diagnosisMode: 'photo-only',
+    assessment: null,
+    settings: null,
+    plant: {
+      ...snapshot.content.plant,
+      capacity_kw: null,
+      commissioned_on: null,
+    },
+  };
+  const frozen = { ...snapshot, content };
+  const one = await renderReportPdf(report, frozen, font);
+  assert.deepEqual(one, await renderReportPdf(report, frozen, font));
+  const pdf = await PDFDocument.load(one);
+  assert.ok(pdf.getPageCount() > 0);
+  await assert.rejects(
+    () =>
+      renderReportPdf(
+        report,
+        { ...frozen, content: { ...content, diagnosisMode: undefined } },
+        font,
+      ),
+    /형식/,
+  );
+  await assert.rejects(
+    () =>
+      renderReportPdf(
+        report,
+        { ...frozen, content: { ...content, schemaVersion: 1 } },
         font,
       ),
     /형식/,
