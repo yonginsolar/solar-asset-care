@@ -1409,6 +1409,27 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      get_my_account_state: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      admin_remove_member: {
+        Args: {
+          p_organization_id: string;
+          p_user_id: string;
+          p_expected_updated_at: string;
+        };
+        Returns: undefined;
+      };
+      transfer_super_admin: {
+        Args: {
+          p_organization_id: string;
+          p_target_user_id: string;
+          p_expected_super_admin_user_id: string;
+          p_expected_target_updated_at: string;
+        };
+        Returns: undefined;
+      };
       add_organization_member_by_email: {
         Args: { p_email: string; p_organization_id: string; p_role: string };
         Returns: {

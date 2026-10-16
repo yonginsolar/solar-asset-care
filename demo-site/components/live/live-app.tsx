@@ -32,6 +32,7 @@ import {
   ShieldCheck,
   SunMedium,
   ThermometerSun,
+  Trash2,
   UploadCloud,
   Users,
   Wrench,
@@ -45,6 +46,17 @@ import {
   originalImageType as verifiedImageType,
 } from '@/lib/original-upload';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from '@/components/ui/alert-dialog';
+import { parseAccountState, type AccountState } from '@/lib/account-access';
 import { backendConfig, getSupabaseBrowserClient } from '@/lib/supabase/client';
 import type { Database, Json, Tables } from '@/lib/supabase/database.types';
 import { AssessmentsView, CalculationSettingsView } from './live-assessments';
@@ -78,6 +90,7 @@ type Profile = Tables<'profiles'>;
 type Workspace = {
   organization: Organization;
   membership: Membership;
+  superAdminUserId: string | null;
 };
 
 type View =
@@ -586,10 +599,14 @@ function UpdatePasswordPanel({
   supabase,
   onComplete,
   embedded = false,
+  initialSetup = false,
+  onSignOut,
 }: {
   supabase: SupabaseClient<Database>;
   onComplete?: () => void;
   embedded?: boolean;
+  initialSetup?: boolean;
+  onSignOut?: () => void;
 }) {
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -609,7 +626,12 @@ function UpdatePasswordPanel({
       if (error) throw error;
       setPassword('');
       setConfirmation('');
-      setNotice({ tone: 'success', text: '비밀번호를 변경했습니다.' });
+      setNotice({
+        tone: 'success',
+        text: initialSetup
+          ? '비밀번호를 설정했습니다. 계속하기를 눌러 시작하세요.'
+          : '비밀번호를 변경했습니다.',
+      });
     } catch (error) {
       setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
@@ -623,9 +645,13 @@ function UpdatePasswordPanel({
       <span className="grid size-11 place-items-center rounded-2xl bg-teal-50 text-teal-700">
         <KeyRound className="size-5" />
       </span>
-      <Heading className="mt-5 text-2xl font-bold">비밀번호 변경</Heading>
+      <Heading className="mt-5 text-2xl font-bold">
+        {initialSetup ? '비밀번호 생성' : '비밀번호 변경'}
+      </Heading>
       <p className="mt-2 text-sm leading-6 text-slate-500">
-        다른 서비스에서 사용하지 않는 8자 이상의 비밀번호를 입력하세요.
+        {initialSetup
+          ? '초대를 수락하셨습니다. 서비스를 시작하려면 다른 곳에서 사용하지 않는 8자 이상의 비밀번호를 먼저 설정해 주세요.'
+          : '다른 서비스에서 사용하지 않는 8자 이상의 비밀번호를 입력하세요.'}
       </p>
       <div className="mt-5">
         <NoticeBar notice={notice} />
@@ -653,7 +679,11 @@ function UpdatePasswordPanel({
         </Field>
         <Button type="submit" className="h-11 w-full" disabled={busy}>
           {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}
-          {busy ? '변경 중…' : '비밀번호 변경'}
+          {busy
+            ? '저장 중…'
+            : initialSetup
+              ? '비밀번호 설정하고 시작하기'
+              : '비밀번호 변경'}
         </Button>
       </form>
       {onComplete && notice?.tone === 'success' && (
@@ -664,6 +694,17 @@ function UpdatePasswordPanel({
           onClick={onComplete}
         >
           계속하기
+        </Button>
+      )}
+      {onSignOut && (
+        <Button
+          type="button"
+          variant="ghost"
+          className="mt-3 h-11 w-full"
+          disabled={busy}
+          onClick={onSignOut}
+        >
+          로그아웃
         </Button>
       )}
     </section>
@@ -708,11 +749,22 @@ function WorkspaceGate({
   session: Session;
 }) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [accountState, setAccountState] = useState<AccountState | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice>(null);
 
   const loadWorkspace = useCallback(async () => {
+    setLoading(true);
+    setNotice(null);
+    setWorkspace(null);
     try {
+      const { data: stateData, error: stateError } = await supabase.rpc(
+        'get_my_account_state',
+      );
+      if (stateError) throw stateError;
+      const state = parseAccountState(stateData);
+      setAccountState(state);
+      if (state.needsInitialPassword || state.accessRemoved) return;
       const { data: membership, error: memberError } = await supabase
         .from('organization_members')
         .select('*')
@@ -732,7 +784,11 @@ function WorkspaceGate({
         .eq('id', membership.organization_id)
         .single();
       if (organizationError) throw organizationError;
-      setWorkspace({ membership, organization });
+      setWorkspace({
+        membership,
+        organization,
+        superAdminUserId: state.superAdminUserId,
+      });
     } catch (error) {
       setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
@@ -746,6 +802,51 @@ function WorkspaceGate({
   }, [loadWorkspace]);
 
   if (loading) return <FullScreenLoading label="불러오는 중입니다." />;
+  if (accountState?.needsInitialPassword) {
+    return (
+      <UpdatePasswordPanel
+        supabase={supabase}
+        initialSetup
+        onComplete={() => void loadWorkspace()}
+        onSignOut={() => void supabase.auth.signOut()}
+      />
+    );
+  }
+  if (accountState?.accessRemoved || notice?.tone === 'error') {
+    return (
+      <main className="grid min-h-svh place-items-center bg-[#eef3f5] px-4 py-8">
+        <section className="w-full max-w-md rounded-3xl border bg-white p-6 shadow-sm">
+          <Brand />
+          <h1 className="mt-8 text-xl font-bold">
+            {accountState?.accessRemoved
+              ? '접근권한이 해제되었습니다'
+              : '계정 확인이 필요합니다'}
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            {accountState?.accessRemoved
+              ? '이 작업공간의 관리자 계정이 삭제되었습니다. 이용이 필요하면 담당 관리자에게 문의해 주세요.'
+              : notice?.text}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-6 h-11 w-full"
+            onClick={() => void loadWorkspace()}
+          >
+            다시 확인
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            className="mt-2 h-11 w-full"
+            onClick={() => void supabase.auth.signOut()}
+          >
+            로그아웃
+          </Button>
+        </section>
+      </main>
+    );
+  }
   if (!workspace) {
     return (
       <OrganizationOnboarding
@@ -964,6 +1065,24 @@ function AdminConsole({
 
   const refresh = useCallback(async () => {
     try {
+      const { data: stateData, error: stateError } = await supabase.rpc(
+        'get_my_account_state',
+      );
+      if (stateError) throw stateError;
+      const accountState = parseAccountState(stateData);
+      if (
+        accountState.accessRemoved ||
+        accountState.needsInitialPassword ||
+        accountState.organizationId !== organizationId
+      ) {
+        await supabase.auth.signOut();
+        throw new Error('현재 계정으로 이 작업공간을 이용할 수 없습니다.');
+      }
+      setWorkspace((current) =>
+        current.superAdminUserId === accountState.superAdminUserId
+          ? current
+          : { ...current, superAdminUserId: accountState.superAdminUserId },
+      );
       const scoped = <T,>(
         request: PromiseLike<{ data: T | null; error: unknown }>,
       ) => request;
@@ -1066,6 +1185,7 @@ function AdminConsole({
             .from('organization_members')
             .select('*')
             .eq('organization_id', organizationId)
+            .neq('status', 'removed')
             .order('created_at'),
         ),
       ]);
@@ -4238,6 +4358,59 @@ function MembersView(
   );
   const [busy, setBusy] = useState(false);
   const [busyMemberId, setBusyMemberId] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<{
+    kind: 'remove' | 'transfer';
+    member: Membership;
+  } | null>(null);
+  const actionInFlight = useRef(false);
+  const superAdminUserId = props.workspace.superAdminUserId;
+  const isSuperAdmin = superAdminUserId === props.session.user.id;
+
+  async function confirmMemberAction() {
+    if (!pendingAction || !props.canWrite || actionInFlight.current) return;
+    actionInFlight.current = true;
+    const { kind, member } = pendingAction;
+    setBusyMemberId(member.user_id);
+    props.setNotice(null);
+    try {
+      if (kind === 'transfer') {
+        if (!isSuperAdmin || !superAdminUserId)
+          throw new Error('현재 최고 관리자만 권한을 양도할 수 있습니다.');
+        const { error } = await props.supabase.rpc('transfer_super_admin', {
+          p_organization_id: props.organizationId,
+          p_target_user_id: member.user_id,
+          p_expected_super_admin_user_id: superAdminUserId,
+          p_expected_target_updated_at: member.updated_at,
+        });
+        if (error) throw error;
+        props.setWorkspace({
+          ...props.workspace,
+          superAdminUserId: member.user_id,
+        });
+      } else {
+        const { error } = await props.supabase.rpc('admin_remove_member', {
+          p_organization_id: props.organizationId,
+          p_user_id: member.user_id,
+          p_expected_updated_at: member.updated_at,
+        });
+        if (error) throw error;
+      }
+      setPendingAction(null);
+      await props.refresh();
+      props.setNotice({
+        tone: 'success',
+        text:
+          kind === 'transfer'
+            ? '최고 관리자 권한을 양도했습니다. 내 계정은 일반 관리자로 변경되었습니다.'
+            : '관리자를 삭제하고 이 작업공간의 접근권한을 해제했습니다. 기존 업무 자료는 보존됩니다.',
+      });
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
+    } finally {
+      actionInFlight.current = false;
+      setBusyMemberId(null);
+    }
+  }
   async function addMember(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -4316,6 +4489,46 @@ function MembersView(
         title="계정·역할 관리"
         copy="의뢰인은 직접 가입하고, 전문가와 관리자는 초대 메일로 계정을 만듭니다. 관리자는 세 역할과 계정 상태를 모두 관리합니다."
       />
+      <AlertDialog
+        open={pendingAction !== null}
+        onOpenChange={(open) => {
+          if (!open && !actionInFlight.current) setPendingAction(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingAction?.kind === 'transfer'
+                ? '최고 관리자 권한을 양도할까요?'
+                : '이 관리자를 삭제할까요?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="mb-3 block font-semibold text-slate-800">
+                {pendingAction &&
+                  (props.profiles[pendingAction.member.user_id]?.display_name ||
+                    props.profiles[pendingAction.member.user_id]?.email ||
+                    '선택한 관리자')}
+              </span>
+              {pendingAction?.kind === 'transfer'
+                ? '상대방이 유일한 최고 관리자가 됩니다. 내 계정은 일반 관리자로 바뀌며, 다른 관리자가 내 계정을 삭제할 수 있게 됩니다.'
+                : '이 작업공간에 접근할 수 없게 되며 관리자 목록에서 제외됩니다. 기존 발전소·점검·보고서와 작성 이력은 삭제하지 않습니다.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busyMemberId !== null}>
+              취소
+            </AlertDialogCancel>
+            <AlertDialogAction
+              type="button"
+              disabled={busyMemberId !== null}
+              onClick={() => void confirmMemberAction()}
+            >
+              {busyMemberId ? <Loader2 className="animate-spin" /> : null}
+              {pendingAction?.kind === 'transfer' ? '권한 양도' : '관리자 삭제'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="grid gap-5 xl:grid-cols-[390px_1fr]">
         <div className="space-y-5">
           <form
@@ -4325,8 +4538,8 @@ function MembersView(
             <h2 className="font-bold">전문가·관리자 초대</h2>
             {!props.canWrite && <ReadOnlyNote />}
             <p className="rounded-xl bg-sky-50 p-3 text-xs leading-5 text-sky-800">
-              초대받은 사용자가 메일의 링크를 열면 계정이 활성화됩니다. 의뢰인은
-              로그인 화면에서 직접 가입합니다.
+              초대받은 사용자가 메일의 링크를 열고 비밀번호를 설정하면 이용할 수
+              있습니다. 의뢰인은 로그인 화면에서 직접 가입합니다.
             </p>
             <Field label="이름">
               <Input
@@ -4395,6 +4608,13 @@ function MembersView(
           <div className="divide-y">
             {props.members.map((member) => {
               const profile = props.profiles[member.user_id];
+              const protectedSuperAdmin = member.user_id === superAdminUserId;
+              const isSelf = member.user_id === props.session.user.id;
+              const memberActionLocked =
+                !props.canWrite ||
+                busyMemberId !== null ||
+                busy ||
+                pendingAction !== null;
               return (
                 <div
                   key={member.user_id}
@@ -4404,41 +4624,87 @@ function MembersView(
                     <strong className="text-sm">
                       {profile?.display_name || '이름 미등록'}
                     </strong>
+                    {protectedSuperAdmin && (
+                      <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-800">
+                        <ShieldCheck className="size-3" />
+                        최고 관리자
+                      </span>
+                    )}
                     <p className="mt-1 text-xs text-slate-500">
                       {profile?.email || '이메일 확인 중'}
                     </p>
                   </div>
-                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-48 sm:flex-row">
-                    <select
-                      className="h-11 rounded-lg border bg-white px-3 text-sm font-semibold sm:h-9 sm:px-2 sm:text-xs"
-                      value={member.role}
-                      disabled={
-                        !props.canWrite || busyMemberId === member.user_id
-                      }
-                      onChange={(e) =>
-                        void updateMember(member, { role: e.target.value })
-                      }
-                      aria-label="사용자 역할"
-                    >
-                      <option value="client">의뢰인</option>
-                      <option value="expert">전문가</option>
-                      <option value="owner">관리자</option>
-                    </select>
-                    <select
-                      className="h-11 rounded-lg border bg-white px-3 text-sm font-semibold sm:h-9 sm:px-2 sm:text-xs"
-                      value={member.status}
-                      disabled={
-                        !props.canWrite || busyMemberId === member.user_id
-                      }
-                      onChange={(e) =>
-                        void updateMember(member, { status: e.target.value })
-                      }
-                      aria-label="계정 상태"
-                    >
-                      <option value="invited">초대 대기</option>
-                      <option value="active">사용 중</option>
-                      <option value="suspended">사용 중지</option>
-                    </select>
+                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-48 sm:flex-wrap sm:justify-end">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <select
+                        className="h-11 rounded-lg border bg-white px-3 text-sm font-semibold sm:h-9 sm:px-2 sm:text-xs"
+                        value={member.role}
+                        disabled={memberActionLocked || protectedSuperAdmin}
+                        onChange={(e) =>
+                          void updateMember(member, { role: e.target.value })
+                        }
+                        aria-label="사용자 역할"
+                      >
+                        <option value="client">의뢰인</option>
+                        <option value="expert">전문가</option>
+                        <option value="owner">관리자</option>
+                      </select>
+                      <select
+                        className="h-11 rounded-lg border bg-white px-3 text-sm font-semibold sm:h-9 sm:px-2 sm:text-xs"
+                        value={member.status}
+                        disabled={memberActionLocked || protectedSuperAdmin}
+                        onChange={(e) =>
+                          void updateMember(member, { status: e.target.value })
+                        }
+                        aria-label="계정 상태"
+                      >
+                        <option value="invited">초대 대기</option>
+                        <option
+                          value="active"
+                          disabled={member.status === 'invited'}
+                        >
+                          사용 중
+                        </option>
+                        <option value="suspended">사용 중지</option>
+                      </select>
+                    </div>
+                    {member.role === 'owner' &&
+                      !protectedSuperAdmin &&
+                      !isSelf && (
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          {isSuperAdmin && member.status === 'active' && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="min-h-11 sm:min-h-9"
+                              disabled={memberActionLocked}
+                              onClick={() =>
+                                setPendingAction({ kind: 'transfer', member })
+                              }
+                            >
+                              <ShieldCheck />
+                              최고 관리자 양도
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="min-h-11 text-rose-700 sm:min-h-9"
+                            disabled={memberActionLocked}
+                            onClick={() =>
+                              setPendingAction({ kind: 'remove', member })
+                            }
+                          >
+                            <Trash2 />
+                            관리자 삭제
+                          </Button>
+                        </div>
+                      )}
+                    {protectedSuperAdmin && (
+                      <p className="text-xs leading-5 text-slate-500">
+                        최고 관리자는 양도 전까지 삭제·중지할 수 없습니다.
+                      </p>
+                    )}
                     {busyMemberId === member.user_id && (
                       <Loader2 className="m-auto size-4 animate-spin text-teal-600" />
                     )}
