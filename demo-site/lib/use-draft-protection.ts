@@ -1,19 +1,9 @@
 'use client';
 import { useEffect } from 'react';
+import { protectDraftNavigation } from './draft-navigation';
 /** Protect only real unsaved input; opening/reading/retrying does not mark dirty. */
-export function useDraftProtection(dirty: boolean) {
+export function useDraftProtection(dirty: boolean, busy = false) {
   useEffect(() => {
-    if (!dirty) return;
-    const unload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    const navigate = (event: Event) => event.preventDefault();
-    window.addEventListener('beforeunload', unload);
-    window.addEventListener('solarscope:navigate', navigate);
-    return () => {
-      window.removeEventListener('beforeunload', unload);
-      window.removeEventListener('solarscope:navigate', navigate);
-    };
-  }, [dirty]);
+    return protectDraftNavigation(window, dirty, busy);
+  }, [dirty, busy]);
 }

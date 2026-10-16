@@ -8,6 +8,14 @@ test('acceptance credentials stay on an explicitly authorized target', () => {
     acceptanceTarget({ SOLAR_ACCEPTANCE_RUN: '1' }),
     'http://localhost:3000',
   );
+  assert.equal(
+    acceptanceTarget({ SOLAR_ACCEPTANCE_RUN: '1', SOLAR_ACCEPTANCE_DEPLOYED: '1' }),
+    hosted,
+    'explicit deployed mode must not silently test localhost',
+  );
+  assert.throws(() => acceptanceTarget({
+    SOLAR_ACCEPTANCE_RUN: '1', SOLAR_ACCEPTANCE_DEPLOYED: '1', SOLAR_UI_ACCEPTANCE: '1',
+  }));
   const env = { SOLAR_ACCEPTANCE_RUN: '1', SOLAR_ACCEPTANCE_ORIGIN: hosted };
   assert.throws(() => acceptanceTarget(env));
   assert.equal(

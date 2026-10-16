@@ -82,8 +82,8 @@ export function AccountProfile({
         JSON.stringify({
           ...data?.profile,
           kind: data?.profile.kind ?? 'individual',
-        }) &&
-      !busy,
+        }),
+    busy,
   );
   async function save(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();

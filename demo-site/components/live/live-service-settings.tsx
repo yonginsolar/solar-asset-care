@@ -114,7 +114,7 @@ export function ServiceSettingsView({
   }, [supabase, organizationId]);
   const dirty = JSON.stringify(draft) !== saved;
   const canApply = Boolean(config?.revision) && serviceContentReady(draft);
-  useDraftProtection(Boolean(config) && dirty && !busy);
+  useDraftProtection(Boolean(config) && dirty, busy);
   async function mutate(action: string) {
     if (lock.current || !config) return;
     lock.current = true;

@@ -73,7 +73,7 @@ export function CustomersView({
     payload: Record<string, Json>;
     label: string;
   } | null>(null);
-  useDraftProtection(Boolean(name || bn || representative) && !busy);
+  useDraftProtection(Boolean(name || bn || representative), busy);
   async function load(signal?: AbortSignal) {
     const r = await serviceRpc<Data>(
       supabase,

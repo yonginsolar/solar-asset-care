@@ -82,6 +82,8 @@ import {
 } from '@/lib/inspection-preview';
 import { InspectionPreviewButton } from './inspection-preview';
 import { AccountProfile } from './live-profile';
+import { useDraftProtection } from '@/lib/use-draft-protection';
+import { draftNavigationState } from '@/lib/draft-navigation';
 import { ServiceSettingsView } from './live-service-settings';
 import { CustomersView } from './live-customers';
 import { AuditView } from './live-audit';
@@ -1158,18 +1160,23 @@ function AdminConsole({
 }) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
   const [view, setView] = useState<View>('dashboard');
-  const [pendingNavigation, setPendingNavigation] = useState<View | null>(null);
-  const changeView = (next: View) => {
-    if (next === view) return;
-    if (
-      window.dispatchEvent(
-        new Event('solarscope:navigate', { cancelable: true }),
-      )
-    ) {
-      setView(next);
-      setNotice(null);
-    } else setPendingNavigation(next);
+  type Destination = View | 'refresh' | 'logout';
+  const [pendingNavigation, setPendingNavigation] = useState<Destination | null>(null);
+  const performNavigation = (next: Destination) => {
+    setNotice(null);
+    if (next === 'refresh') void refresh();
+    else if (next === 'logout') void supabase.auth.signOut();
+    else setView(next);
   };
+  const requestNavigation = (next: Destination) => {
+    if (next === view) return;
+    const state = draftNavigationState(window);
+    if (state === 'busy') {
+      setNotice({ tone: 'info', text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.' });
+    } else if (state === 'dirty') setPendingNavigation(next);
+    else performNavigation(next);
+  };
+  const changeView = (next: View) => requestNavigation(next);
   const [plants, setPlants] = useState<Plant[]>([]);
   const [inspections, setInspections] = useState<Inspection[]>([]);
   const [files, setFiles] = useState<InspectionFile[]>([]);
@@ -1499,9 +1506,12 @@ function AdminConsole({
             <AlertDialogCancel>이어서 작성</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (pendingNavigation) setView(pendingNavigation);
+                if (pendingNavigation) {
+                  if (draftNavigationState(window) === 'busy')
+                    setNotice({ tone: 'info', text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.' });
+                  else performNavigation(pendingNavigation);
+                }
                 setPendingNavigation(null);
-                setNotice(null);
               }}
             >
               저장하지 않고 이동
@@ -1523,7 +1533,7 @@ function AdminConsole({
               variant="outline"
               size="sm"
               aria-label="새로고침"
-              onClick={() => void refresh()}
+              onClick={() => requestNavigation('refresh')}
               disabled={loading}
             >
               <RefreshCw className={loading ? 'animate-spin' : ''} />
@@ -1533,7 +1543,7 @@ function AdminConsole({
               variant="ghost"
               size="sm"
               aria-label="로그아웃"
-              onClick={() => supabase.auth.signOut()}
+              onClick={() => requestNavigation('logout')}
             >
               <LogOut /> <span className="hidden md:inline">로그아웃</span>
             </Button>
@@ -1551,7 +1561,6 @@ function AdminConsole({
             value={view}
             onChange={(event) => {
               changeView(event.target.value as View);
-              setNotice(null);
             }}
             aria-label="작업 메뉴"
           >
@@ -1575,7 +1584,6 @@ function AdminConsole({
                   type="button"
                   onClick={() => {
                     changeView(item.id);
-                    setNotice(null);
                   }}
                   className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition md:w-full ${
                     view === item.id
@@ -2091,8 +2099,13 @@ function PlantsView(
   const [dataUseConsent, setDataUseConsent] = useState(false);
   const [requesterId, setRequesterId] = useState('');
   const [busy, setBusy] = useState(false);
+  const draft = JSON.stringify([name, code, address, capacity, commissionedOn, operatorType, moduleModel, inverterModel, dataUseConsent, requesterId]);
+  const baseline = useRef(draft);
+  useDraftProtection(props.canWrite && draft !== baseline.current, busy);
+  const saveLock = useRef(false);
 
   function reset() {
+    baseline.current = JSON.stringify(['', '', '', '', '', '개인', '', '', false, '']);
     setEditingId(null);
     setName('');
     setCode('');
@@ -2118,10 +2131,14 @@ function PlantsView(
     setModuleModel(jsonText(metadata.module_model));
     setInverterModel(jsonText(metadata.inverter_model));
     setDataUseConsent(Boolean(metadata.data_use_consent_at));
+    setRequesterId('');
+    baseline.current = JSON.stringify([plant.name, plant.code ?? '', plant.address ?? '', plant.capacity_kw == null ? '' : String(plant.capacity_kw), plant.commissioned_on ?? '', jsonText(metadata.operator_type, '개인'), jsonText(metadata.module_model), jsonText(metadata.inverter_model), Boolean(metadata.data_use_consent_at), '']);
   }
 
   async function save(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saveLock.current) return;
+    saveLock.current = true;
     setBusy(true);
     props.setNotice(null);
     try {
@@ -2209,6 +2226,7 @@ function PlantsView(
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      saveLock.current = false;
       setBusy(false);
     }
   }
@@ -2238,6 +2256,7 @@ function PlantsView(
             onSubmit={save}
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
+            <fieldset disabled={busy} className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="font-bold">
                 {editingId
@@ -2382,6 +2401,7 @@ function PlantsView(
               {busy ? <Loader2 className="animate-spin" /> : <Plus />}
               {editingId ? '변경 저장' : '발전소 등록'}
             </Button>
+            </fieldset>
           </form>
         )}
         <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
@@ -2474,9 +2494,15 @@ function InspectionsView(
   const [busy, setBusy] = useState(false);
 
   const effectivePlantId = plantId || props.plants[0]?.id || '';
+  const draft = JSON.stringify([effectivePlantId, code, purpose, scheduledAt, dueAt, notes, expertId]);
+  const baseline = useRef(draft);
+  useDraftProtection(props.canCreate && draft !== baseline.current, busy);
+  const createLock = useRef(false);
 
   async function create(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (createLock.current) return;
+    createLock.current = true;
     setBusy(true);
     props.setNotice(null);
     try {
@@ -2503,12 +2529,15 @@ function InspectionsView(
           });
       if (error) throw error;
       props.setNotice({ tone: 'success', text: '점검을 접수했습니다.' });
-      setCode(`INS-${Date.now().toString().slice(-8)}`);
+      const nextCode = `INS-${Date.now().toString().slice(-8)}`;
+      baseline.current = JSON.stringify([effectivePlantId, nextCode, purpose, scheduledAt, dueAt, '', expertId]);
+      setCode(nextCode);
       setNotes('');
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      createLock.current = false;
       setBusy(false);
     }
   }
@@ -2575,6 +2604,7 @@ function InspectionsView(
             onSubmit={create}
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
+            <fieldset disabled={busy} className="space-y-4">
             <h2 className="font-bold">
               {props.requesterMode ? '새 점검 요청' : '새 점검 접수'}
             </h2>
@@ -2670,6 +2700,7 @@ function InspectionsView(
               {busy ? <Loader2 className="animate-spin" /> : <Plus />}
               {props.requesterMode ? '점검 요청' : '점검 접수'}
             </Button>
+            </fieldset>
           </form>
         )}
         <section className="space-y-3">
