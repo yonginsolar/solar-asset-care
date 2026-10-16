@@ -97,8 +97,15 @@ try {
     ),
   );
   checks++;
+  sql(
+    readFileSync(
+      join(root, 'supabase/tests/optimistic_workflow_updates.sql'),
+      'utf8',
+    ),
+  );
+  checks++;
   console.log(
-    'PASS all migrations + service access + progressive diagnosis + workflow integrity SQL assertions',
+    'PASS all migrations + service access + progressive diagnosis + workflow integrity + optimistic updates SQL assertions',
   );
   console.log('PASS isolated suites: ' + checks + '; no production writes');
 } catch (e) {

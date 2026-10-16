@@ -333,6 +333,100 @@ try {
     true,
     'optional schedules can be cleared without replacing the inspection',
   );
+  // Same CAS request as the UI: preserve current RLS and check returned rows.
+  const beforeAssignment = await required(
+    owner.client
+      .from('inspections')
+      .select('*')
+      .eq('id', inspection.id)
+      .single(),
+  );
+  const newerAssignment = await required(
+    owner.client
+      .from('inspections')
+      .update({ assigned_expert_user_id: null })
+      .eq('id', inspection.id)
+      .eq('organization_id', organization.id)
+      .eq('updated_at', beforeAssignment.updated_at)
+      .select('*')
+      .single(),
+  );
+  check(
+    Boolean(newerAssignment.id),
+    'fresh real-Auth assignment updates exactly one row',
+  );
+  const staleAssignment = await owner.client
+    .from('inspections')
+    .update({ assigned_expert_user_id: expert.id })
+    .eq('id', inspection.id)
+    .eq('organization_id', organization.id)
+    .eq('updated_at', beforeAssignment.updated_at)
+    .select('id')
+    .maybeSingle();
+  check(
+    !staleAssignment.error && !staleAssignment.data,
+    'stale assignment returns zero rows instead of overwriting newer assignment',
+  );
+  const restoredAssignment = await required(
+    owner.client
+      .from('inspections')
+      .update({ assigned_expert_user_id: expert.id })
+      .eq('id', inspection.id)
+      .eq('organization_id', organization.id)
+      .eq('updated_at', newerAssignment.updated_at)
+      .select('*')
+      .single(),
+  );
+  const staleStatus = await owner.client
+    .from('inspections')
+    .update({ status: 'scheduled' })
+    .eq('id', inspection.id)
+    .eq('organization_id', organization.id)
+    .eq('updated_at', newerAssignment.updated_at)
+    .select('id')
+    .maybeSingle();
+  check(
+    !staleStatus.error && !staleStatus.data,
+    'stale inspection status returns zero rows and preserves current stage',
+  );
+  for (const actor of [client, otherOwner]) {
+    const blocked = await actor.client
+      .from('inspections')
+      .update({ status: 'scheduled' })
+      .eq('id', inspection.id)
+      .eq('updated_at', restoredAssignment.updated_at)
+      .select('id')
+      .maybeSingle();
+    check(
+      !blocked.data,
+      'customer/foreign owner still cannot update using exact revision',
+    );
+  }
+  for (const value of [0, 0.5, 1]) {
+    const response = await fetch(`${origin}/api/thermal/analyze`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${owner.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        width: 8,
+        height: 8,
+        values: Array(64).fill(value),
+        sensitivity: 72,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const result = await response.json();
+    check(
+      response.status === 200 &&
+        result.quality === 'uniform' &&
+        result.regions.length === 0 &&
+        result.summary.hotCandidates === 0 &&
+        result.summary.coldCandidates === 0,
+      `authenticated uniform ${value} image produces no false full-frame candidates`,
+    );
+  }
   const partnerProfile = (overrides = {}) => ({
     p_organization_id: organization.id,
     p_partner_id: null,

@@ -17,15 +17,21 @@ import {
   CERTIFICATE_MAX_BYTES,
   certificateFilename,
   certificateStatus,
+  preserveCertificateDrafts,
 } from '@/lib/recycling-certificate';
 import { koreanDate } from '@/lib/operational-assessment';
 import { useFormDraftProtection } from '@/lib/use-form-draft-protection';
+import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useGuardedAction } from '@/lib/use-guarded-action';
+import type { DraftNavigationState } from '@/lib/draft-navigation';
+import { DraftChangeDialog } from './draft-change-dialog';
 
 type Certificate = Tables<'recycling_certificates'>;
 type Client = SupabaseClient<Database>;
 const inputClass =
   'h-11 w-full min-w-0 rounded-lg border bg-white px-3 text-base';
 const fieldClass = 'grid min-w-0 gap-2 text-sm font-semibold';
+type CardGuard = () => DraftNavigationState;
 async function requestFile(client: Client, id: string, body?: FormData) {
   const { data, error } = await client.auth.getSession();
   if (error || !data.session) throw new Error('다시 로그인해 주세요.');
@@ -77,40 +83,71 @@ export function RecyclingView({
     [status, setStatus] = useState('');
   const [uploadId, setUploadId] = useState('');
   const draft = useFormDraftProtection(saving);
+  const cardGuards = useRef(new Map<string, CardGuard>());
+  const [cardEpoch, setCardEpoch] = useState(0);
+  const onCardGuard = useCallback((id: string, readState: CardGuard | null) => {
+    if (readState) cardGuards.current.set(id, readState);
+    else cardGuards.current.delete(id);
+  }, []);
+  const listChange = useGuardedAction(() => {
+    const states = Array.from(cardGuards.current.values(), (read) => read());
+    if (saving || states.includes('busy')) return 'busy';
+    return states.includes('dirty') ? 'dirty' : 'clean';
+  });
+  const changeList = (next: () => void) =>
+    listChange.request(() => {
+      // Only an explicit discard/reload may reset all cards. Saving one card
+      // refreshes rows without resetting unrelated editors below.
+      setCardEpoch((value) => value + 1);
+      next();
+    });
   const fileInput = useRef<HTMLInputElement>(null);
   const requestSequence = useRef({ value: 0 });
-  const refresh = useCallback(async () => {
-    const sequence = ++requestSequence.current.value;
-    setLoading(true);
-    setFailed(false);
-    let request = supabase
-      .from('recycling_certificates')
-      .select('*', { count: 'exact' })
-      .eq('organization_id', organizationId)
-      .order('created_at', { ascending: false })
-      .order('id');
-    if (plantFilter) request = request.eq('plant_id', plantFilter);
-    if (status && isOwner) request = request.eq('status', status);
-    if (search)
-      request = request.ilike(
-        'title',
-        `%${search.replace(/[\\%_]/g, '\\$&')}%`,
-      );
-    const result = await request.range(page * 20, page * 20 + 19);
-    if (sequence !== requestSequence.current.value) return;
-    if (result.error) {
-      setRows([]);
-      setTotal(0);
-      setFailed(true);
-      setNotice(
-        '인증서 목록을 불러오지 못했습니다. 다시 불러오기를 눌러 주세요.',
-      );
-    } else {
-      setRows(result.data || []);
-      setTotal(result.count || 0);
-    }
-    setLoading(false);
-  }, [supabase, organizationId, plantFilter, status, isOwner, search, page]);
+  const refresh = useCallback(
+    async (savedId?: string) => {
+      const sequence = ++requestSequence.current.value;
+      setLoading(true);
+      setFailed(false);
+      let request = supabase
+        .from('recycling_certificates')
+        .select('*', { count: 'exact' })
+        .eq('organization_id', organizationId)
+        .order('created_at', { ascending: false })
+        .order('id');
+      if (plantFilter) request = request.eq('plant_id', plantFilter);
+      if (status && isOwner) request = request.eq('status', status);
+      if (search)
+        request = request.ilike(
+          'title',
+          `%${search.replace(/[\\%_]/g, '\\$&')}%`,
+        );
+      const result = await request.range(page * 20, page * 20 + 19);
+      if (sequence !== requestSequence.current.value) return;
+      if (result.error) {
+        setFailed(true);
+        setNotice(
+          '인증서 목록을 불러오지 못했습니다. 마지막 조회 결과와 작성 중인 내용은 유지됩니다. 다시 불러오기를 눌러 주세요.',
+        );
+      } else {
+        const protectedIds = new Set(
+          Array.from(cardGuards.current.entries())
+            .filter(([, read]) => read() !== 'clean')
+            .map(([id]) => id),
+        );
+        setRows((previous) =>
+          preserveCertificateDrafts(
+            previous,
+            result.data || [],
+            protectedIds,
+            savedId,
+          ),
+        );
+        setTotal(result.count || 0);
+      }
+      setLoading(false);
+    },
+    [supabase, organizationId, plantFilter, status, isOwner, search, page],
+  );
   useEffect(() => {
     const sequence = requestSequence.current;
     const timer = window.setTimeout(() => void refresh(), 0);
@@ -144,13 +181,8 @@ export function RecyclingView({
       draft.markSaved();
       setUploadId('');
       setNotice(
-        '등록했습니다. 파일을 내려받아 확인한 뒤 의뢰인에게 공개해 주세요.',
+        `등록했습니다. 파일을 내려받아 확인한 뒤 의뢰인에게 공개해 주세요.${search || plantFilter || status || page ? ' 현재 검색 조건이나 페이지에 따라 새 인증서가 보이지 않을 수 있습니다.' : ''}`,
       );
-      setSearch('');
-      setQuery('');
-      setPlantFilter('');
-      setStatus('');
-      setPage(0);
       await refresh();
     } catch (e) {
       setNotice(
@@ -164,14 +196,15 @@ export function RecyclingView({
   }
   return (
     <section className="space-y-5">
+      <DraftChangeDialog guard={listChange} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">재활용 인증서</h1>
         <Button
           type="button"
           variant="outline"
           className="min-h-11"
-          disabled={loading}
-          onClick={() => void refresh()}
+          disabled={loading || saving}
+          onClick={() => changeList(() => void refresh())}
         >
           <RefreshCw className={loading ? 'animate-spin' : ''} /> 다시 불러오기
         </Button>
@@ -313,8 +346,12 @@ export function RecyclingView({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          setSearch(query.trim());
-          setPage(0);
+          const next = query.trim();
+          if (next === search && page === 0) return;
+          changeList(() => {
+            setSearch(next);
+            setPage(0);
+          });
         }}
         className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-2 lg:grid-cols-4"
       >
@@ -333,8 +370,12 @@ export function RecyclingView({
           <select
             value={plantFilter}
             onChange={(e) => {
-              setPlantFilter(e.target.value);
-              setPage(0);
+              const next = e.target.value;
+              if (next === plantFilter) return;
+              changeList(() => {
+                setPlantFilter(next);
+                setPage(0);
+              });
             }}
             className={inputClass}
           >
@@ -352,8 +393,12 @@ export function RecyclingView({
             <select
               value={status}
               onChange={(e) => {
-                setStatus(e.target.value);
-                setPage(0);
+                const next = e.target.value;
+                if (next === status) return;
+                changeList(() => {
+                  setStatus(next);
+                  setPage(0);
+                });
               }}
               className={inputClass}
             >
@@ -370,9 +415,10 @@ export function RecyclingView({
           검색
         </Button>
       </form>
-      {loading ? (
+      {loading && (
         <output className="py-6 text-base">인증서를 불러오는 중입니다.</output>
-      ) : failed ? null : rows.length === 0 ? (
+      )}
+      {!loading && !failed && rows.length === 0 && (
         <p className="rounded-2xl border bg-white p-6 text-base text-slate-600">
           {search || plantFilter || status
             ? '검색 조건에 맞는 인증서가 없습니다.'
@@ -380,7 +426,8 @@ export function RecyclingView({
               ? '등록된 인증서가 없습니다.'
               : '조회할 수 있는 재활용 인증서가 없습니다.'}
         </p>
-      ) : (
+      )}
+      {rows.length > 0 && (
         <>
           <p className="text-sm text-slate-600">
             총 {total.toLocaleString('ko-KR')}건
@@ -388,7 +435,7 @@ export function RecyclingView({
           <div className="grid items-start gap-4 xl:grid-cols-2">
             {rows.map((row) => (
               <CertificateCard
-                key={`${row.id}-${row.revision}`}
+                key={`${row.id}-${row.revision}-${cardEpoch}`}
                 row={row}
                 plants={plants}
                 plantName={
@@ -397,6 +444,7 @@ export function RecyclingView({
                 supabase={supabase}
                 isOwner={isOwner}
                 onChanged={refresh}
+                onGuard={onCardGuard}
                 onNotice={setNotice}
               />
             ))}
@@ -409,8 +457,8 @@ export function RecyclingView({
             type="button"
             variant="outline"
             className="min-h-11"
-            disabled={loading || page === 0}
-            onClick={() => setPage(page - 1)}
+            disabled={loading || saving || page === 0}
+            onClick={() => changeList(() => setPage(page - 1))}
           >
             이전
           </Button>
@@ -421,8 +469,8 @@ export function RecyclingView({
             type="button"
             variant="outline"
             className="min-h-11"
-            disabled={loading || (page + 1) * 20 >= total}
-            onClick={() => setPage(page + 1)}
+            disabled={loading || saving || (page + 1) * 20 >= total}
+            onClick={() => changeList(() => setPage(page + 1))}
           >
             다음
           </Button>
@@ -440,19 +488,34 @@ function CertificateCard({
   isOwner,
   onChanged,
   onNotice,
+  onGuard,
 }: {
   row: Certificate;
   plants: Tables<'plants'>[];
   plantName: string;
   supabase: Client;
   isOwner: boolean;
-  onChanged: () => Promise<void>;
+  onChanged: (id: string) => Promise<void>;
   onNotice: (s: string) => void;
+  onGuard: (id: string, readState: CardGuard | null) => void;
 }) {
   const [busy, setBusy] = useState(false),
     [downloaded, setDownloaded] = useState(false),
     [confirmed, setConfirmed] = useState(false),
     [reason, setReason] = useState('');
+  const [writing, setWriting] = useState(false);
+  const correction = useFormDraftProtection(writing);
+  useDraftProtection(Boolean(reason || confirmed), writing);
+  const readGuard: CardGuard = () =>
+    writing
+      ? 'busy'
+      : correction.getState() === 'dirty' || Boolean(reason || confirmed)
+        ? 'dirty'
+        : 'clean';
+  useEffect(() => {
+    onGuard(row.id, readGuard);
+    return () => onGuard(row.id, null);
+  });
   async function download() {
     if (busy) return;
     setBusy(true);
@@ -478,7 +541,14 @@ function CertificateCard({
   async function review(publish: boolean) {
     if (busy || !reason.trim() || (publish && (!downloaded || !confirmed)))
       return;
+    if (correction.getState() === 'dirty') {
+      onNotice(
+        '수정 중인 등록 정보를 먼저 저장하거나 원래 값으로 돌린 뒤 공개·회수해 주세요.',
+      );
+      return;
+    }
     setBusy(true);
+    setWriting(true);
     try {
       const { error } = await supabase.rpc('review_recycling_certificate', {
         p_id: row.id,
@@ -488,12 +558,14 @@ function CertificateCard({
         p_reason: reason.trim(),
       });
       if (error) throw error;
+      setReason('');
+      setConfirmed(false);
       onNotice(
         publish
           ? '해당 발전소 의뢰인에게 공개했습니다.'
           : '인증서를 회수했습니다. 새 조회·다운로드는 차단됩니다. 이미 내려받은 사본은 삭제되지 않습니다.',
       );
-      await onChanged();
+      await onChanged(row.id);
     } catch (e) {
       onNotice(
         typeof e === 'object' && e && 'message' in e
@@ -502,6 +574,7 @@ function CertificateCard({
       );
     } finally {
       setBusy(false);
+      setWriting(false);
     }
   }
   async function correct(event: SyntheticEvent<HTMLFormElement>) {
@@ -513,6 +586,7 @@ function CertificateCard({
         return typeof value === 'string' ? value.trim() : '';
       };
     setBusy(true);
+    setWriting(true);
     try {
       const { error } = await supabase.rpc('correct_recycling_certificate', {
         p_id: row.id,
@@ -526,10 +600,11 @@ function CertificateCard({
         p_reason: text('reason'),
       });
       if (error) throw error;
+      correction.markSaved();
       onNotice(
         '정보를 수정하고 확인 대기로 돌렸습니다. 파일과 수정 내용을 다시 확인한 뒤 공개해 주세요.',
       );
-      await onChanged();
+      await onChanged(row.id);
     } catch (e) {
       onNotice(
         typeof e === 'object' && e && 'message' in e
@@ -538,6 +613,7 @@ function CertificateCard({
       );
     } finally {
       setBusy(false);
+      setWriting(false);
     }
   }
   return (
@@ -587,7 +663,13 @@ function CertificateCard({
               <summary className="cursor-pointer py-2 text-base font-semibold">
                 등록 정보 수정
               </summary>
-              <form onSubmit={correct} className="mt-3 grid gap-3">
+              <form
+                ref={correction.ref}
+                onInput={correction.onInput}
+                onChange={correction.onChange}
+                onSubmit={correct}
+                className="mt-3 grid gap-3"
+              >
                 <fieldset disabled={busy} className="contents">
                   <label
                     className={fieldClass}

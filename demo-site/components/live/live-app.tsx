@@ -11,6 +11,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import {
   AlertTriangle,
@@ -141,6 +142,7 @@ type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
 type AnalysisResult = {
   disclaimer: string;
+  quality?: 'uniform' | 'relative';
   summary: {
     heatIndex: number;
     contrast: number;
@@ -444,12 +446,26 @@ function FullScreenLoading({ label }: { label: string }) {
   );
 }
 
-function Brand() {
+function Brand({ onHome }: { onHome?: () => void } = {}) {
   return (
     <Link
       href="/"
       className="flex items-center gap-3"
       aria-label="SolarScope 홈"
+      onClick={(event) => {
+        // Modified clicks open another tab without destroying this draft.
+        if (
+          onHome &&
+          event.button === 0 &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          onHome();
+        }
+      }}
     >
       <span className="grid size-10 place-items-center rounded-xl bg-teal-600 text-white shadow-sm">
         <SunMedium className="size-5" />
@@ -1235,6 +1251,7 @@ function AdminConsole({
   session: Session;
   initialWorkspace: Workspace;
 }) {
+  const router = useRouter();
   const [workspace, setWorkspace] = useState(initialWorkspace);
   const [notice, setNotice] = useState<Notice>(null);
   const navigation = useWorkspaceLocation(
@@ -1247,12 +1264,18 @@ function AdminConsole({
   );
   const view = navigation.view;
   const selectedInspection = navigation.inspectionId;
-  type Destination = View | 'refresh' | 'logout' | `inspection:${string}`;
+  type Destination =
+    | View
+    | 'home'
+    | 'refresh'
+    | 'logout'
+    | `inspection:${string}`;
   const [pendingNavigation, setPendingNavigation] =
     useState<Destination | null>(null);
   const performNavigation = (next: Destination) => {
     setNotice(null);
     if (next === 'refresh') void refresh();
+    else if (next === 'home') router.push('/');
     else if (next === 'logout') void supabase.auth.signOut();
     else if (next.startsWith('inspection:'))
       navigation.go({ view, inspectionId: next.slice(11) });
@@ -1676,7 +1699,7 @@ function AdminConsole({
         </AlertDialog>
         <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
           <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between gap-4 px-4 md:px-6">
-            <Brand />
+            <Brand onHome={() => requestNavigation('home')} />
             <div className="flex items-center gap-3">
               <div className="hidden text-right sm:block">
                 <strong className="block text-sm">{portalTitle(role)}</strong>
@@ -2948,45 +2971,61 @@ function InspectionsView(
     }
   }
 
-  async function updateStatus(id: string, status: string) {
+  async function updateStatus(inspection: Inspection, status: string) {
     if (rowLock.current) return;
     rowLock.current = true;
     setRowBusy(true);
     props.setNotice(null);
     try {
-      const { error } = await props.supabase
+      const { data, error } = await props.supabase
         .from('inspections')
         .update({ status })
-        .eq('id', id);
-      if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-      else {
-        props.setNotice({ tone: 'success', text: '점검 상태를 변경했습니다.' });
-        await props.refresh();
-      }
+        .eq('id', inspection.id)
+        .eq('organization_id', props.organizationId)
+        .eq('updated_at', inspection.updated_at)
+        .select('id')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data)
+        throw new Error(
+          '점검이 변경됐거나 현재 수정 권한이 없습니다. 다시 불러온 뒤 확인해 주세요.',
+        );
+      props.setNotice({ tone: 'success', text: '점검 상태를 변경했습니다.' });
+      await props.refresh();
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       rowLock.current = false;
       setRowBusy(false);
     }
   }
 
-  async function assignExpert(id: string, assignedExpertUserId: string) {
+  async function assignExpert(
+    inspection: Inspection,
+    assignedExpertUserId: string,
+  ) {
     if (rowLock.current) return;
     rowLock.current = true;
     setRowBusy(true);
     props.setNotice(null);
     try {
-      const { error } = await props.supabase
+      const { data, error } = await props.supabase
         .from('inspections')
         .update({ assigned_expert_user_id: assignedExpertUserId || null })
-        .eq('id', id);
-      if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-      else {
-        props.setNotice({
-          tone: 'success',
-          text: '담당 전문가를 변경했습니다.',
-        });
-        await props.refresh();
-      }
+        .eq('id', inspection.id)
+        .eq('organization_id', props.organizationId)
+        .eq('updated_at', inspection.updated_at)
+        .select('id')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data)
+        throw new Error(
+          '점검이 변경됐거나 현재 수정 권한이 없습니다. 다시 불러온 뒤 확인해 주세요.',
+        );
+      props.setNotice({ tone: 'success', text: '담당 전문가를 변경했습니다.' });
+      await props.refresh();
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       rowLock.current = false;
       setRowBusy(false);
@@ -3166,7 +3205,7 @@ function InspectionsView(
                         className="h-9 max-w-56 rounded-lg border bg-white px-3 text-xs"
                         value={inspection.assigned_expert_user_id ?? ''}
                         onChange={(e) =>
-                          void assignExpert(inspection.id, e.target.value)
+                          void assignExpert(inspection, e.target.value)
                         }
                         disabled={
                           !props.canUpdate ||
@@ -3199,7 +3238,7 @@ function InspectionsView(
                         }
                         aria-label={`${inspection.inspection_code} 점검 상태`}
                         onChange={(e) =>
-                          void updateStatus(inspection.id, e.target.value)
+                          void updateStatus(inspection, e.target.value)
                         }
                       >
                         {!availableStatuses.some(
@@ -3412,6 +3451,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
             ...analysis.summary,
             disclaimer: analysis.disclaimer,
             analyzed_at: analysis.analyzedAt,
+            quality: analysis.quality ?? 'relative',
           } as Json,
           p_regions: analysis.regions.map((region) => ({
             kind: region.kind,
@@ -3426,7 +3466,10 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
       );
       if (finishRunError) throw finishRunError;
 
-      return analysis.regions.length;
+      return {
+        count: analysis.regions.length,
+        uniform: analysis.quality === 'uniform',
+      };
     } catch (error) {
       await props.supabase.rpc('fail_relative_analysis', {
         p_analysis_run_id: run.id,
@@ -3449,10 +3492,12 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
         type: fileRow.mime_type ?? data.type,
       });
       await verifiedImageType(file);
-      const candidateCount = await analyzeFile(file, fileRow);
+      const result = await analyzeFile(file, fileRow);
       props.setNotice({
-        tone: 'success',
-        text: `상대 분석 후보 ${candidateCount}건을 만들었습니다.`,
+        tone: result.uniform ? 'info' : 'success',
+        text: result.uniform
+          ? '사진의 명암 차이가 없어 상대 후보를 만들지 않았습니다. 원본과 촬영 조건을 확인해 주세요. 이상이 없다는 판정은 아닙니다.'
+          : `상대 분석 후보 ${result.count}건을 만들었습니다.`,
       });
       await props.refresh();
     } catch (error) {
@@ -3531,8 +3576,10 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               const normalized = new File([item.file], item.file.name, {
                 type: fileRow.mime_type || '',
               });
-              const count = await analyzeFile(normalized, fileRow);
-              message += ` · 후보 ${count}건`;
+              const result = await analyzeFile(normalized, fileRow);
+              message += result.uniform
+                ? ' · 명암 차이 없음: 원본·촬영 조건 확인 필요 (정상 판정 아님)'
+                : ` · 후보 ${result.count}건`;
             } catch {
               message += ' · 분석은 아래 원본 목록에서 다시 실행해 주세요.';
             }
@@ -4296,15 +4343,23 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
     try {
       const updates: Database['public']['Tables']['maintenance_requests']['Update'] =
         { status };
-      const { error } = await props.supabase
+      const { data, error } = await props.supabase
         .from('maintenance_requests')
         .update(updates)
-        .eq('id', item.id);
-      if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-      else {
-        props.setNotice({ tone: 'success', text: '조치 상태를 변경했습니다.' });
-        await props.refresh();
-      }
+        .eq('id', item.id)
+        .eq('organization_id', props.organizationId)
+        .eq('updated_at', item.updated_at)
+        .select('id')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data)
+        throw new Error(
+          '조치가 변경됐거나 현재 수정 권한이 없습니다. 다시 불러온 뒤 확인해 주세요.',
+        );
+      props.setNotice({ tone: 'success', text: '조치 상태를 변경했습니다.' });
+      await props.refresh();
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       lock.current = false;
       setBusy(false);

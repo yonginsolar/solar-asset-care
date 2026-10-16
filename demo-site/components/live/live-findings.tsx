@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { useInspectionSelection } from '@/lib/inspection-context';
 import { useFormDraftProtection } from '@/lib/use-form-draft-protection';
+import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useGuardedAction } from '@/lib/use-guarded-action';
+import { DraftChangeDialog } from './draft-change-dialog';
 import Image from 'next/image';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
@@ -73,14 +76,24 @@ export function FindingsEditorView(props: Props) {
   const [id, setInspection] = useInspectionSelection(props.inspections);
   const [editing, setEditing] = useState<Finding | null>(null);
   const [editorVersion, setEditorVersion] = useState(0);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const change = useGuardedAction();
+  useDraftProtection(false, editorBusy);
+  const activeEditing = editing?.inspection_id === id ? editing : null;
+  const finishEditing = () => {
+    setEditing(null);
+    setEditorVersion((v) => v + 1);
+  };
   const findings = props.findings.filter((f) => f.inspection_id === id);
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-bold">이상 소견·전문가 판정</h1>
+      <DraftChangeDialog guard={change} />
       <Field label="점검">
         <select
           className={selectClass}
           value={id}
+          disabled={editorBusy}
           onChange={(e) => {
             if (!setInspection(e.target.value)) return;
             setEditing(null);
@@ -103,14 +116,13 @@ export function FindingsEditorView(props: Props) {
       <div className="grid items-start gap-5 xl:grid-cols-2">
         {id && props.canWrite && (
           <FindingForm
-            key={`${id}-${editing?.id ?? 'new'}-${editing?.updated_at ?? ''}-${editorVersion}`}
+            key={`${id}-${activeEditing?.id ?? 'new'}-${activeEditing?.updated_at ?? ''}-${editorVersion}`}
             {...props}
             inspectionId={id}
-            initial={editing}
-            finish={() => {
-              setEditing(null);
-              setEditorVersion((v) => v + 1);
-            }}
+            initial={activeEditing}
+            finish={finishEditing}
+            newFinding={() => change.request(finishEditing)}
+            onPending={setEditorBusy}
           />
         )}
         <section className="space-y-3">
@@ -154,8 +166,15 @@ export function FindingsEditorView(props: Props) {
                 type="button"
                 variant="outline"
                 className="mt-4"
-                disabled={!props.canWrite}
-                onClick={() => setEditing(f)}
+                disabled={!props.canWrite || editorBusy}
+                onClick={() => {
+                  if (
+                    activeEditing?.id === f.id &&
+                    activeEditing.updated_at === f.updated_at
+                  )
+                    return;
+                  change.request(() => setEditing(f));
+                }}
               >
                 판정·수정
               </Button>
@@ -176,6 +195,8 @@ function FindingForm(
     inspectionId: string;
     initial: Finding | null;
     finish: () => void;
+    newFinding: () => void;
+    onPending: (value: boolean) => void;
   },
 ) {
   const f = props.initial;
@@ -267,6 +288,7 @@ function FindingForm(
     const formElement = e.currentTarget;
     const form = new FormData(formElement);
     setBusy(true);
+    props.onPending(true);
     props.setNotice(null);
     try {
       const values = ['x', 'y', 'width', 'height'].map((k) =>
@@ -343,6 +365,7 @@ function FindingForm(
       props.setNotice({ tone: 'error', text: message(e) });
     } finally {
       setBusy(false);
+      props.onPending(false);
     }
   }
   return (
@@ -362,7 +385,7 @@ function FindingForm(
               type="button"
               size="sm"
               variant="ghost"
-              onClick={props.finish}
+              onClick={props.newFinding}
             >
               새 소견
             </Button>

@@ -33,12 +33,18 @@ function collectRegions(
   height: number,
   threshold: number,
   kind: 'hot' | 'cold',
+  median: number,
 ) {
   const visited = new Uint8Array(values.length);
   const minimumArea = Math.max(4, Math.floor(values.length * 0.0015));
   const regions: Region[] = [];
   const matches = (value: number) =>
-    kind === 'hot' ? value >= threshold : value <= threshold;
+    // Quantile ties describe the background, not an anomaly. Strictly compare
+    // with the median so a flat image cannot be both a whole-image hot/cold spot.
+    // Do not gate on p95-p05: sparse, real candidates may occupy less than 5%.
+    kind === 'hot'
+      ? value >= threshold && value > median
+      : value <= threshold && value < median;
 
   for (let start = 0; start < values.length; start += 1) {
     if (visited[start] || !matches(values[start])) continue;
@@ -141,14 +147,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const width = Math.floor(payload.width ?? 0);
-  const height = Math.floor(payload.height ?? 0);
-  const values = payload.values;
-  const sensitivity = Math.min(100, Math.max(1, payload.sensitivity ?? 72));
+  const width = payload?.width ?? 0;
+  const height = payload?.height ?? 0;
+  const values = payload?.values;
+  const requestedSensitivity = payload?.sensitivity ?? 72;
+  const sensitivity = Math.min(100, Math.max(1, requestedSensitivity));
 
   if (
-    !width ||
-    !height ||
+    !Number.isSafeInteger(width) ||
+    width < 1 ||
+    !Number.isSafeInteger(height) ||
+    height < 1 ||
+    typeof requestedSensitivity !== 'number' ||
+    !Number.isFinite(requestedSensitivity) ||
     !Array.isArray(values) ||
     values.length !== width * height
   ) {
@@ -174,17 +185,26 @@ export async function POST(request: Request) {
 
   const sorted = [...values].sort((a, b) => a - b);
   const spread = percentile(sorted, 0.95) - percentile(sorted, 0.05);
+  const median = percentile(sorted, 0.5);
   const hotQuantile = 0.82 + (sensitivity / 100) * 0.13;
   const coldQuantile = 1 - hotQuantile;
   const hotThreshold = percentile(sorted, hotQuantile);
   const coldThreshold = percentile(sorted, coldQuantile);
-  const hotRegions = collectRegions(values, width, height, hotThreshold, 'hot');
+  const hotRegions = collectRegions(
+    values,
+    width,
+    height,
+    hotThreshold,
+    'hot',
+    median,
+  );
   const coldRegions = collectRegions(
     values,
     width,
     height,
     coldThreshold,
     'cold',
+    median,
   );
 
   return Response.json({
@@ -204,6 +224,7 @@ export async function POST(request: Request) {
       hotCandidates: hotRegions.length,
       coldCandidates: coldRegions.length,
     },
+    quality: sorted[0] === sorted[sorted.length - 1] ? 'uniform' : 'relative',
     regions: [...hotRegions, ...coldRegions],
     analyzedAt: new Date().toISOString(),
   });

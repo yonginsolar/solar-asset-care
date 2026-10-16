@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { useInspectionSelection } from '@/lib/inspection-context';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useGuardedAction } from '@/lib/use-guarded-action';
+import { DraftChangeDialog } from './draft-change-dialog';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -41,6 +43,10 @@ export function ReportImagesView({
   const [revision, setRevision] = useState(0);
   const [verified, setVerified] = useState<Record<string, boolean>>({});
   useDraftProtection(Boolean(sourceId || caption || masks.length), busy);
+  // Merely selecting/reading a source should not ask to discard edits.
+  const sourceChange = useGuardedAction(() =>
+    busy ? 'busy' : caption || masks.length ? 'dirty' : 'clean',
+  );
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestId = useRef('');
   const sources = files.filter(
@@ -213,6 +219,7 @@ export function ReportImagesView({
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-bold">보고서 사진</h1>
+      <DraftChangeDialog guard={sourceChange} />
       <label className="block text-sm">
         점검 선택
         <select
@@ -257,7 +264,11 @@ export function ReportImagesView({
             <select
               className="mt-2 block w-full rounded-lg border bg-white p-3"
               value={sourceId}
-              onChange={(e) => selectSource(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next !== sourceId)
+                  sourceChange.request(() => selectSource(next));
+              }}
             >
               <option value="">JPG·PNG 원본 선택</option>
               {sources.map((f) => (

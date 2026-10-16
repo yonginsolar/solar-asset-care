@@ -4,6 +4,27 @@ export const certificateStatus = {
   published: '의뢰인 공개',
   withdrawn: '회수',
 } as const;
+
+/** A background refresh after saving one card must not replace another draft's
+ * original revision or unmount it when a newly inserted row shifts the page. */
+export function preserveCertificateDrafts<T extends { id: string }>(
+  previous: T[],
+  incoming: T[],
+  protectedIds: ReadonlySet<string>,
+  savedId?: string,
+) {
+  const retained = new Map(
+    previous
+      .filter((row) => row.id !== savedId && protectedIds.has(row.id))
+      .map((row) => [row.id, row]),
+  );
+  const next = incoming.map((row) => {
+    const old = retained.get(row.id);
+    retained.delete(row.id);
+    return old ?? row;
+  });
+  return [...next, ...retained.values()];
+}
 export function certificateExtension(mime: string) {
   return (
     {

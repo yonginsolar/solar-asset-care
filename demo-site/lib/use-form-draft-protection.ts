@@ -29,5 +29,11 @@ export function useFormDraftProtection(busy: boolean) {
       saved.current = true;
       if (!busy) update();
     },
+    getState(): 'clean' | 'dirty' | 'busy' {
+      if (busy) return 'busy';
+      if (!ref.current || baseline.current === null || saved.current)
+        return 'clean';
+      return signature() === baseline.current ? 'clean' : 'dirty';
+    },
   };
 }
