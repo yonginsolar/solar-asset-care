@@ -29,6 +29,7 @@ import {
   LogOut,
   Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
   SunMedium,
   ThermometerSun,
@@ -57,6 +58,16 @@ import {
   AlertDialogAction,
 } from '@/components/ui/alert-dialog';
 import { parseAccountState, type AccountState } from '@/lib/account-access';
+import {
+  directoryMembers,
+  directoryRoleCounts,
+  memberRoleTabs,
+  type MemberRoleTab,
+} from '@/lib/member-directory';
+import {
+  workspaceCollections,
+  type WorkspaceCollection,
+} from '@/lib/workspace-load-plan';
 import { backendConfig, getSupabaseBrowserClient } from '@/lib/supabase/client';
 import type { Database, Json, Tables } from '@/lib/supabase/database.types';
 import { AssessmentsView, CalculationSettingsView } from './live-assessments';
@@ -1044,6 +1055,13 @@ function AdminConsole({
   const [members, setMembers] = useState<Membership[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [loading, setLoading] = useState(true);
+  const [loadedView, setLoadedView] = useState<View | null>(null);
+  const readRequest = useRef({
+    sequence: 0,
+    controller: null as AbortController | null,
+  });
+  const currentView = useRef(view);
+  currentView.current = view;
   const [notice, setNotice] = useState<Notice>(null);
 
   const organizationId = workspace.organization.id;
@@ -1064,10 +1082,21 @@ function AdminConsole({
   );
 
   const refresh = useCallback(async () => {
+    if (currentView.current !== view) return;
+    readRequest.current.controller?.abort();
+    const sequence = ++readRequest.current.sequence;
+    const controller = new AbortController();
+    readRequest.current.controller = controller;
+    const current = () =>
+      readRequest.current.sequence === sequence && currentView.current === view;
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
+    const needed = workspaceCollections(view);
+    setLoading(true);
     try {
-      const { data: stateData, error: stateError } = await supabase.rpc(
-        'get_my_account_state',
-      );
+      const { data: stateData, error: stateError } = await supabase
+        .rpc('get_my_account_state')
+        .abortSignal(controller.signal);
+      if (!current()) return;
       if (stateError) throw stateError;
       const accountState = parseAccountState(stateData);
       if (
@@ -1084,8 +1113,16 @@ function AdminConsole({
           : { ...current, superAdminUserId: accountState.superAdminUserId },
       );
       const scoped = <T,>(
-        request: PromiseLike<{ data: T | null; error: unknown }>,
-      ) => request;
+        collection: WorkspaceCollection,
+        request: PromiseLike<{ data: T | null; error: unknown }> & {
+          abortSignal: (
+            signal: AbortSignal,
+          ) => PromiseLike<{ data: T | null; error: unknown }>;
+        },
+      ) =>
+        needed.includes(collection)
+          ? request.abortSignal(controller.signal)
+          : Promise.resolve({ data: null, error: null });
       const [
         plantResult,
         inspectionResult,
@@ -1102,6 +1139,7 @@ function AdminConsole({
         memberResult,
       ] = await Promise.all([
         scoped(
+          'plants',
           supabase
             .from('plants')
             .select('*')
@@ -1109,6 +1147,7 @@ function AdminConsole({
             .order('name'),
         ),
         scoped(
+          'inspections',
           supabase
             .from('inspections')
             .select('*')
@@ -1116,6 +1155,7 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'inspection_files',
           supabase
             .from('inspection_files')
             .select('*')
@@ -1123,6 +1163,7 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'analysis_runs',
           supabase
             .from('analysis_runs')
             .select('*')
@@ -1130,6 +1171,7 @@ function AdminConsole({
             .order('requested_at', { ascending: false }),
         ),
         scoped(
+          'findings',
           supabase
             .from('findings')
             .select('*')
@@ -1137,6 +1179,7 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'reports',
           supabase
             .from('reports')
             .select('*')
@@ -1144,6 +1187,7 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'maintenance_requests',
           supabase
             .from('maintenance_requests')
             .select('*')
@@ -1151,6 +1195,7 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'partners',
           supabase
             .from('partners')
             .select('*')
@@ -1158,12 +1203,14 @@ function AdminConsole({
             .order('name'),
         ),
         scoped(
+          'partner_private_details',
           supabase
             .from('partner_private_details')
             .select('*')
             .order('created_at'),
         ),
         scoped(
+          'quote_requests',
           supabase
             .from('quote_requests')
             .select('*')
@@ -1171,6 +1218,7 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'partner_quotes',
           supabase
             .from('partner_quotes')
             .select('*')
@@ -1178,9 +1226,11 @@ function AdminConsole({
             .order('created_at', { ascending: false }),
         ),
         scoped(
+          'plant_requesters',
           supabase.from('plant_requesters').select('*').order('created_at'),
         ),
         scoped(
+          'organization_members',
           supabase
             .from('organization_members')
             .select('*')
@@ -1189,6 +1239,7 @@ function AdminConsole({
             .order('created_at'),
         ),
       ]);
+      if (!current()) return;
       const results = [
         plantResult,
         inspectionResult,
@@ -1206,6 +1257,24 @@ function AdminConsole({
       ];
       const failed = results.find((result) => result.error);
       if (failed?.error) throw failed.error;
+      const nextMembers = (memberResult.data ?? []) as Membership[];
+      let nextProfiles: Record<string, Profile> = {};
+      if (nextMembers.length) {
+        const { data: profileRows, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .in(
+            'user_id',
+            nextMembers.map((member) => member.user_id),
+          )
+          .abortSignal(controller.signal);
+        if (!current()) return;
+        if (error) throw error;
+        nextProfiles = Object.fromEntries(
+          (profileRows ?? []).map((profile) => [profile.user_id, profile]),
+        );
+      }
+      if (!current()) return;
       setPlants((plantResult.data ?? []) as Plant[]);
       setInspections((inspectionResult.data ?? []) as Inspection[]);
       setFiles((fileResult.data ?? []) as InspectionFile[]);
@@ -1220,33 +1289,30 @@ function AdminConsole({
       setQuoteRequests((quoteRequestResult.data ?? []) as QuoteRequest[]);
       setPartnerQuotes((partnerQuoteResult.data ?? []) as PartnerQuote[]);
       setPlantRequesters((plantRequesterResult.data ?? []) as PlantRequester[]);
-      const nextMembers = (memberResult.data ?? []) as Membership[];
       setMembers(nextMembers);
-      if (nextMembers.length) {
-        const { data: profileRows, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .in(
-            'user_id',
-            nextMembers.map((member) => member.user_id),
-          );
-        if (error) throw error;
-        setProfiles(
-          Object.fromEntries(
-            (profileRows ?? []).map((profile) => [profile.user_id, profile]),
-          ),
-        );
-      }
+      setProfiles(nextProfiles);
+      setLoadedView(view);
     } catch (error) {
-      setNotice({ tone: 'error', text: errorMessage(error) });
+      if (current())
+        setNotice({
+          tone: 'error',
+          text: controller.signal.aborted
+            ? '연결이 오래 걸려 조회를 중단했습니다. 다시 불러오기를 눌러 주세요.'
+            : errorMessage(error),
+        });
     } finally {
-      setLoading(false);
+      window.clearTimeout(timeout);
+      if (current()) setLoading(false);
     }
-  }, [organizationId, supabase]);
+  }, [organizationId, supabase, view]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      readRequest.current.sequence++;
+      readRequest.current.controller?.abort();
+    };
   }, [refresh]);
 
   const shared = {
@@ -1358,9 +1424,22 @@ function AdminConsole({
 
         <main className="min-w-0 p-3 sm:p-4 md:p-6 lg:p-8">
           <NoticeBar notice={notice} />
-          {loading && plants.length === 0 ? (
+          {loadedView !== view ? (
             <div className="grid min-h-[55vh] place-items-center">
-              <Loader2 className="size-7 animate-spin text-teal-600" />
+              {loading ? (
+                <Loader2
+                  aria-label="자료 불러오는 중"
+                  className="size-7 animate-spin text-teal-600"
+                />
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void refresh()}
+                >
+                  다시 불러오기
+                </Button>
+              )}
             </div>
           ) : (
             <>
@@ -4362,6 +4441,19 @@ function MembersView(
     kind: 'remove' | 'transfer';
     member: Membership;
   } | null>(null);
+  const [memberTab, setMemberTab] = useState<MemberRoleTab>('owner');
+  const [searchDraft, setSearchDraft] = useState('');
+  const [memberSearch, setMemberSearch] = useState('');
+  const roleCounts = directoryRoleCounts(props.members);
+  const visibleMembers = directoryMembers(
+    props.members,
+    props.profiles,
+    memberTab,
+    memberSearch,
+  );
+  const memberTabLabel = memberRoleTabs.find(
+    (tab) => tab.role === memberTab,
+  )?.label;
   const actionInFlight = useRef(false);
   const superAdminUserId = props.workspace.superAdminUserId;
   const isSuperAdmin = superAdminUserId === props.session.user.id;
@@ -4529,7 +4621,7 @@ function MembersView(
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <div className="grid gap-5 xl:grid-cols-[390px_1fr]">
+      <div className="grid items-start gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-5">
           <form
             onSubmit={addMember}
@@ -4601,12 +4693,110 @@ function MembersView(
             </Button>
           </form>
         </div>
-        <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
-          <div className="border-b px-5 py-4">
-            <h2 className="font-bold">연결 사용자 {props.members.length}명</h2>
+        <section className="order-first min-w-0 overflow-hidden rounded-2xl border bg-white shadow-sm xl:order-last">
+          <div className="border-b px-4 pt-4 sm:px-5">
+            <h2 className="font-bold">사용자 관리</h2>
+            <div
+              role="tablist"
+              aria-label="사용자 역할"
+              className="mt-4 grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1"
+            >
+              {memberRoleTabs.map(({ role: tabRole, label }, index) => (
+                <button
+                  key={tabRole}
+                  type="button"
+                  role="tab"
+                  id={`member-tab-${tabRole}`}
+                  aria-controls="member-directory-panel"
+                  aria-selected={memberTab === tabRole}
+                  tabIndex={memberTab === tabRole ? 0 : -1}
+                  onClick={() => setMemberTab(tabRole)}
+                  onKeyDown={(event) => {
+                    const step =
+                      event.key === 'ArrowRight'
+                        ? 1
+                        : event.key === 'ArrowLeft'
+                          ? -1
+                          : 0;
+                    const next =
+                      event.key === 'Home'
+                        ? 0
+                        : event.key === 'End'
+                          ? 2
+                          : step
+                            ? (index + step + 3) % 3
+                            : -1;
+                    if (next < 0) return;
+                    event.preventDefault();
+                    setMemberTab(memberRoleTabs[next].role);
+                    event.currentTarget.parentElement
+                      ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+                      [next]?.focus();
+                  }}
+                  className={`flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-1 text-sm font-semibold transition ${memberTab === tabRole ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+                >
+                  {label}
+                  <span className="text-xs opacity-70">
+                    {roleCounts[tabRole]}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <form
+              aria-label="사용자 검색"
+              className="my-4 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setMemberSearch(searchDraft.trim());
+              }}
+            >
+              <div className="relative min-w-0 flex-1">
+                <Search
+                  aria-hidden
+                  className="pointer-events-none absolute left-3 top-3 size-4 text-slate-400"
+                />
+                <Input
+                  aria-label="이름 또는 이메일 검색"
+                  placeholder="이름 또는 이메일"
+                  value={searchDraft}
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                  className="h-10 pl-9"
+                  maxLength={200}
+                />
+              </div>
+              <Button type="submit" variant="outline" className="h-10 shrink-0">
+                검색
+              </Button>
+              {memberSearch && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-10 shrink-0 px-2"
+                  onClick={() => {
+                    setSearchDraft('');
+                    setMemberSearch('');
+                  }}
+                >
+                  초기화
+                </Button>
+              )}
+            </form>
           </div>
-          <div className="divide-y">
-            {props.members.map((member) => {
+          <div
+            role="tabpanel"
+            id="member-directory-panel"
+            aria-labelledby={`member-tab-${memberTab}`}
+            className="divide-y"
+            tabIndex={0}
+          >
+            <p
+              role="status"
+              className="px-4 py-3 text-xs text-slate-500 sm:px-5"
+            >
+              {memberTabLabel} {visibleMembers.length}명
+              {memberSearch ? ' · 검색 결과' : ''}
+            </p>
+            {visibleMembers.map((member) => {
               const profile = props.profiles[member.user_id];
               const protectedSuperAdmin = member.user_id === superAdminUserId;
               const isSelf = member.user_id === props.session.user.id;
@@ -4616,28 +4806,61 @@ function MembersView(
                 busy ||
                 pendingAction !== null;
               return (
-                <div
-                  key={member.user_id}
-                  className="flex flex-col items-stretch justify-between gap-4 p-5 sm:flex-row sm:items-center"
-                >
-                  <div>
+                <div key={member.user_id} className="px-4 py-4 sm:px-5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <strong className="text-sm">
                       {profile?.display_name || '이름 미등록'}
                     </strong>
                     {protectedSuperAdmin && (
-                      <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-800">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-800">
                         <ShieldCheck className="size-3" />
                         최고 관리자
                       </span>
                     )}
-                    <p className="mt-1 text-xs text-slate-500">
-                      {profile?.email || '이메일 확인 중'}
-                    </p>
+                    {member.role === 'owner' &&
+                      !protectedSuperAdmin &&
+                      !isSelf && (
+                        <div className="flex items-center gap-1">
+                          {isSuperAdmin && member.status === 'active' && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-11 rounded-lg text-slate-400 hover:bg-teal-50 hover:text-teal-700 sm:size-9"
+                              aria-label={`${profile?.display_name || profile?.email || '선택한 관리자'} 최고 관리자 양도`}
+                              title="최고 관리자 양도"
+                              disabled={memberActionLocked}
+                              onClick={() =>
+                                setPendingAction({ kind: 'transfer', member })
+                              }
+                            >
+                              <ShieldCheck className="size-4" />
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-11 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-700 sm:size-9"
+                            aria-label={`${profile?.display_name || profile?.email || '선택한 관리자'} 관리자 삭제`}
+                            title="관리자 삭제"
+                            disabled={memberActionLocked}
+                            onClick={() =>
+                              setPendingAction({ kind: 'remove', member })
+                            }
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      )}
                   </div>
-                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-48 sm:flex-wrap sm:justify-end">
-                    <div className="flex flex-col gap-2 sm:flex-row">
+                  <p className="mt-1 break-all text-xs text-slate-500">
+                    {profile?.email || '이메일 확인 중'}
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    <div className="grid max-w-sm grid-cols-2 gap-2">
                       <select
-                        className="h-11 rounded-lg border bg-white px-3 text-sm font-semibold sm:h-9 sm:px-2 sm:text-xs"
+                        className="h-10 min-w-0 rounded-lg border border-slate-200 bg-slate-50/60 px-3 text-sm text-slate-600"
                         value={member.role}
                         disabled={memberActionLocked || protectedSuperAdmin}
                         onChange={(e) =>
@@ -4650,7 +4873,7 @@ function MembersView(
                         <option value="owner">관리자</option>
                       </select>
                       <select
-                        className="h-11 rounded-lg border bg-white px-3 text-sm font-semibold sm:h-9 sm:px-2 sm:text-xs"
+                        className="h-10 min-w-0 rounded-lg border border-slate-200 bg-slate-50/60 px-3 text-sm text-slate-600"
                         value={member.status}
                         disabled={memberActionLocked || protectedSuperAdmin}
                         onChange={(e) =>
@@ -4668,38 +4891,6 @@ function MembersView(
                         <option value="suspended">사용 중지</option>
                       </select>
                     </div>
-                    {member.role === 'owner' &&
-                      !protectedSuperAdmin &&
-                      !isSelf && (
-                        <div className="flex flex-col gap-2 sm:flex-row">
-                          {isSuperAdmin && member.status === 'active' && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              className="min-h-11 sm:min-h-9"
-                              disabled={memberActionLocked}
-                              onClick={() =>
-                                setPendingAction({ kind: 'transfer', member })
-                              }
-                            >
-                              <ShieldCheck />
-                              최고 관리자 양도
-                            </Button>
-                          )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="min-h-11 text-rose-700 sm:min-h-9"
-                            disabled={memberActionLocked}
-                            onClick={() =>
-                              setPendingAction({ kind: 'remove', member })
-                            }
-                          >
-                            <Trash2 />
-                            관리자 삭제
-                          </Button>
-                        </div>
-                      )}
                     {protectedSuperAdmin && (
                       <p className="text-xs leading-5 text-slate-500">
                         최고 관리자는 양도 전까지 삭제·중지할 수 없습니다.
@@ -4712,6 +4903,13 @@ function MembersView(
                 </div>
               );
             })}
+            {visibleMembers.length === 0 && (
+              <div className="px-5 py-12 text-center text-sm text-slate-500">
+                {memberSearch
+                  ? '검색 결과가 없습니다. 이름이나 이메일을 확인해 주세요.'
+                  : `등록된 ${memberTabLabel} 계정이 없습니다.`}
+              </div>
+            )}
           </div>
         </section>
       </div>
