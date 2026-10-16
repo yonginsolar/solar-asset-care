@@ -3592,7 +3592,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
         >
           <h2 className="font-bold">점검 파일 저장</h2>
           {!props.canWrite && <ReadOnlyNote />}
-          {props.canWrite && !canEditSelected && (
+          {props.canWrite && currentInspection && !canEditSelected && (
             <p className="text-sm text-amber-800">
               이 점검은 종료·취소되어 조회만 가능합니다. 다른 점검을 선택하거나
               관리자가 점검을 재개해 주세요.

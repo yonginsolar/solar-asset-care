@@ -91,6 +91,9 @@ test('upload selection is readable on closed inspections but row analysis and ne
     /inspectionRows\(\s*props.files,\s*effectiveInspectionId,\s*showAll,?\s*\)/,
   );
   assert.ok(code.includes('visibleFiles.map('));
+  assert.ok(
+    code.includes('props.canWrite && currentInspection && !canEditSelected'),
+  );
   assert.ok(!code.includes('props.files.map('));
   const selector = code.slice(
     code.indexOf('<Field label="연결할 점검">'),
