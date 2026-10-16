@@ -15,11 +15,13 @@ export function ReportImagesView({
   inspections,
   files,
   isOwner,
+  readOnly = false,
 }: {
   supabase: SupabaseClient<Database>;
   inspections: Tables<'inspections'>[];
   files: Tables<'inspection_files'>[];
   isOwner: boolean;
+  readOnly?: boolean;
 }) {
   const [inspectionId, setInspection] = useInspectionSelection(inspections);
   const [sourceId, setSourceId] = useState('');
@@ -249,7 +251,7 @@ export function ReportImagesView({
           번호판·얼굴·개인정보는 검은 영역으로 가려 주세요. 원본은 유지하고
           위치정보 등 부가정보를 뺀 별도 사진을 저장합니다.
         </p>
-        <fieldset disabled={busy} className="space-y-4">
+        <fieldset disabled={busy || readOnly} className="space-y-4">
           <label className="block text-sm">
             원본 사진
             <select
@@ -390,7 +392,10 @@ export function ReportImagesView({
                 <Button
                   type="button"
                   disabled={
-                    busy || !verified[photo.id] || photo.status === 'approved'
+                    readOnly ||
+                    busy ||
+                    !verified[photo.id] ||
+                    photo.status === 'approved'
                   }
                   onClick={() => void review(photo, true)}
                 >
@@ -399,7 +404,7 @@ export function ReportImagesView({
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={busy || photo.status === 'excluded'}
+                  disabled={readOnly || busy || photo.status === 'excluded'}
                   onClick={() => void review(photo, false)}
                 >
                   다음 보고서에서 제외

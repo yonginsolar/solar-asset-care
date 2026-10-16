@@ -495,6 +495,7 @@ export type Database = {
       };
       inspections: {
         Row: {
+          workflow_reason: string | null;
           assigned_expert_user_id: string | null;
           assigned_field_user_id: string | null;
           capture_timezone: string;
@@ -513,6 +514,7 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
+          workflow_reason?: string | null;
           assigned_expert_user_id?: string | null;
           assigned_field_user_id?: string | null;
           capture_timezone?: string;
@@ -531,6 +533,7 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          workflow_reason?: string | null;
           assigned_expert_user_id?: string | null;
           assigned_field_user_id?: string | null;
           capture_timezone?: string;
@@ -567,6 +570,7 @@ export type Database = {
       };
       maintenance_requests: {
         Row: {
+          selected_quote_id: string | null;
           assignee_user_id: string | null;
           completed_at: string | null;
           completion_note: string | null;
@@ -584,6 +588,7 @@ export type Database = {
           vendor_name: string | null;
         };
         Insert: {
+          selected_quote_id?: string | null;
           assignee_user_id?: string | null;
           completed_at?: string | null;
           completion_note?: string | null;
@@ -601,6 +606,7 @@ export type Database = {
           vendor_name?: string | null;
         };
         Update: {
+          selected_quote_id?: string | null;
           assignee_user_id?: string | null;
           completed_at?: string | null;
           completion_note?: string | null;
@@ -1409,6 +1415,18 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      reopen_inspection: {
+        Args: {
+          p_inspection_id: string;
+          p_expected_updated_at: string;
+          p_reason: string;
+        };
+        Returns: Database['public']['Tables']['inspections']['Row'];
+      };
+      get_quote_requesters: {
+        Args: { p_org: string };
+        Returns: Array<{ plant_id: string; requester_user_id: string }>;
+      };
       get_public_service_policy: {
         Args: Record<PropertyKey, never>;
         Returns: Json;

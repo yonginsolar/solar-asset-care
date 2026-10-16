@@ -979,13 +979,7 @@ try {
       digest(photoBytes),
     'later plant completion never rewrites issued photo PDF',
   );
-  await required(
-    owner.client.rpc('transition_report_status', {
-      p_report_id: reportId,
-      p_next_status: 'withdrawn',
-      p_reason: '격리 시험: 이후 경제성 포함 버전으로 전환',
-    }),
-  );
+  // Keep the photo issue published while preparing a financial revision.
   const s = {
     sunHours: 3.6,
     degradationRatePercent: 0.6,
@@ -1268,6 +1262,94 @@ try {
         reviewed_by: expert.id,
       })
       .eq('id', finding.id),
+  );
+  check(
+    (
+      await required(
+        client.client
+          .from('findings')
+          .select('id')
+          .eq('inspection_id', inspection.id),
+      )
+    ).length === 0,
+    'customer cannot read mutable findings alongside issued snapshot',
+  );
+  const photoIssue = await required(
+    owner.client
+      .from('reports')
+      .select('status')
+      .eq('id', photoReport.id)
+      .single(),
+  );
+  check(
+    photoIssue.status === 'withdrawn',
+    'financial revision atomically supersedes photo issue',
+  );
+  check(
+    (
+      await required(
+        owner.client
+          .from('report_documents')
+          .select('report_id')
+          .in('report_id', [photoReport.id, reportId]),
+      )
+    ).length === 2,
+    'both report version PDF archives remain',
+  );
+  await required(
+    owner.client
+      .from('inspections')
+      .update({ status: 'closed' })
+      .eq('id', inspection.id),
+  );
+  const closed = await required(
+    owner.client
+      .from('inspections')
+      .select('*')
+      .eq('id', inspection.id)
+      .single(),
+  );
+  check(
+    Boolean(
+      (
+        await expert.client.rpc('reopen_inspection', {
+          p_inspection_id: inspection.id,
+          p_expected_updated_at: closed.updated_at,
+          p_reason: 'forged reopen',
+        })
+      ).error,
+    ),
+    'assigned expert cannot reopen a closed inspection',
+  );
+  check(
+    Boolean(
+      (
+        await expert.client
+          .from('findings')
+          .update({ expert_note: 'closed write', reviewed_by: expert.id })
+          .eq('id', finding.id)
+      ).error,
+    ),
+    'closed inspection blocks expert evidence changes',
+  );
+  await required(
+    owner.client.rpc('reopen_inspection', {
+      p_inspection_id: inspection.id,
+      p_expected_updated_at: closed.updated_at,
+      p_reason: '격리 시험 보완',
+    }),
+  );
+  check(
+    (
+      await required(
+        owner.client
+          .from('inspections')
+          .select('status')
+          .eq('id', inspection.id)
+          .single(),
+      )
+    ).status === 'published',
+    'administrator reopens inspection without withdrawing issued report',
   );
   const frozen = await required(
     client.client

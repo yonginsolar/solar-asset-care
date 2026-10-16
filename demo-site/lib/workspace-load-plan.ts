@@ -15,7 +15,7 @@ export type WorkspaceCollection =
 const plans: Record<string, readonly WorkspaceCollection[]> = {
   dashboard: ['plants', 'inspections', 'findings', 'maintenance_requests'],
   plants: ['plants', 'organization_members'],
-  inspections: ['plants', 'inspections', 'organization_members'],
+  inspections: ['plants', 'inspections', 'reports', 'organization_members'],
   files: ['plants', 'inspections', 'inspection_files', 'analysis_runs'],
   'report-images': ['inspections', 'inspection_files'],
   findings: ['inspections', 'inspection_files', 'findings'],

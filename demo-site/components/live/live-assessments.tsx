@@ -253,6 +253,7 @@ export function AssessmentsView(
     inspections: Tables<'inspections'>[];
     plants: Tables<'plants'>[];
     isOwner: boolean;
+    readOnly?: boolean;
   },
 ) {
   const { rows, loading } = useSettings(props);
@@ -346,6 +347,7 @@ function AssessmentForm(
     settings: SettingsRow[];
     initial: Assessment | null;
     isOwner: boolean;
+    readOnly?: boolean;
     saved: () => Promise<void>;
   },
 ) {
@@ -439,7 +441,7 @@ function AssessmentForm(
         onSubmit={submit}
         className={`${cardStyle} space-y-6`}
       >
-        <fieldset disabled={busy} className="space-y-6">
+        <fieldset disabled={busy || props.readOnly} className="space-y-6">
           <Field label="적용할 계산 기준">
             <select
               name="settingsId"

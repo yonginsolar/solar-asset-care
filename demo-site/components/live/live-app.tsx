@@ -85,6 +85,12 @@ import {
 import { InspectionPreviewButton } from './inspection-preview';
 import { AccountProfile } from './live-profile';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useSectionDraftProtection } from '@/lib/use-section-draft-protection';
+import {
+  inspectionLocked,
+  inspectionRows,
+  manualInspectionStatuses,
+} from '@/lib/inspection-workflow';
 import { draftNavigationState } from '@/lib/draft-navigation';
 import {
   InspectionSelectionProvider,
@@ -1309,6 +1315,9 @@ function AdminConsole({
   const [quoteRequests, setQuoteRequests] = useState<QuoteRequest[]>([]);
   const [partnerQuotes, setPartnerQuotes] = useState<PartnerQuote[]>([]);
   const [plantRequesters, setPlantRequesters] = useState<PlantRequester[]>([]);
+  const [quoteRequesters, setQuoteRequesters] = useState<
+    Array<{ plant_id: string; requester_user_id: string }>
+  >([]);
   const [members, setMembers] = useState<Membership[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [loading, setLoading] = useState(true);
@@ -1334,6 +1343,10 @@ function AdminConsole({
   const canCreateReport = isOwner || isExpert;
   const canApprove = isOwner;
   const canMaintain = isOwner;
+  const currentInspection = inspections.find(
+    (i) => i.id === resolveInspectionSelection(selectedInspection, inspections),
+  );
+  const selectedLocked = inspectionLocked(currentInspection?.status);
   const visibleNavItems = navItems.filter((item) =>
     (roleViews[role] ?? ['dashboard']).includes(item.id),
   );
@@ -1556,6 +1569,14 @@ function AdminConsole({
       setQuoteRequests((quoteRequestResult.data ?? []) as QuoteRequest[]);
       setPartnerQuotes((partnerQuoteResult.data ?? []) as PartnerQuote[]);
       setPlantRequesters((plantRequesterResult.data ?? []) as PlantRequester[]);
+      if (view === 'partners' && isOwner) {
+        const eligible = await supabase
+          .rpc('get_quote_requesters', { p_org: organizationId })
+          .abortSignal(controller.signal);
+        if (!current()) return;
+        if (eligible.error) throw eligible.error;
+        setQuoteRequesters(eligible.data ?? []);
+      } else setQuoteRequesters([]);
       setMembers(nextMembers);
       setProfiles(nextProfiles);
       setLoadedView(view);
@@ -1598,6 +1619,7 @@ function AdminConsole({
     quoteRequests,
     partnerQuotes,
     plantRequesters,
+    quoteRequesters,
     members,
     profiles,
     refresh,
@@ -1804,6 +1826,23 @@ function AdminConsole({
                       </div>
                     </section>
                   )}
+                {selectedLocked &&
+                  canUpload &&
+                  [
+                    'files',
+                    'findings',
+                    'report-images',
+                    'assessments',
+                    'reports',
+                  ].includes(view) &&
+                  currentInspection && (
+                    <InspectionReopen
+                    key={`reopen-${currentInspection.id}`}
+                      {...shared}
+                      inspection={currentInspection}
+                      canReopen={isOwner}
+                    />
+                  )}
                 {view === 'account' && (
                   <>
                     <PageHeading eyebrow="ACCOUNT" title="내 계정" />
@@ -1856,7 +1895,7 @@ function AdminConsole({
                       inspections,
                     )}
                     {...shared}
-                    canWrite={canUpload}
+                    canWrite={canUpload && !selectedLocked}
                   />
                 )}
                 {view === 'report-images' && canUpload && (
@@ -1867,6 +1906,7 @@ function AdminConsole({
                     )}
                     {...shared}
                     isOwner={isOwner}
+                    readOnly={selectedLocked}
                   />
                 )}
                 {view === 'findings' && (
@@ -1876,7 +1916,7 @@ function AdminConsole({
                       inspections,
                     )}
                     {...shared}
-                    canWrite={canReview}
+                    canWrite={canReview && !selectedLocked}
                   />
                 )}
                 {view === 'assessments' && (
@@ -1887,6 +1927,7 @@ function AdminConsole({
                     )}
                     {...shared}
                     isOwner={isOwner}
+                    readOnly={selectedLocked}
                   />
                 )}
                 {view === 'calculation-settings' && isOwner && (
@@ -1977,6 +2018,7 @@ type SharedProps = {
   quoteRequests: QuoteRequest[];
   partnerQuotes: PartnerQuote[];
   plantRequesters: PlantRequester[];
+  quoteRequesters: Array<{ plant_id: string; requester_user_id: string }>;
   members: Membership[];
   profiles: Record<string, Profile>;
   refresh: () => Promise<void>;
@@ -2760,6 +2802,65 @@ function ReadOnlyNote() {
   );
 }
 
+function InspectionReopen(
+  props: SharedProps & { inspection: Inspection; canReopen: boolean },
+) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const lock = useRef(false);
+  useDraftProtection(Boolean(reason.trim()), busy);
+  return (
+    <form
+      className="my-4 space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (lock.current) return;
+        lock.current = true;
+        setBusy(true);
+        try {
+          const result = await props.supabase.rpc('reopen_inspection', {
+            p_inspection_id: props.inspection.id,
+            p_expected_updated_at: props.inspection.updated_at,
+            p_reason: reason,
+          });
+          if (result.error) throw result.error;
+          setReason('');
+          props.setNotice({
+            tone: 'success',
+            text: '점검을 재개했습니다. 기존 발행본은 유지되며 보완 내용은 새 버전으로 발행합니다.',
+          });
+          await props.refresh();
+        } catch (error) {
+          props.setNotice({ tone: 'error', text: errorMessage(error) });
+        } finally {
+          lock.current = false;
+          setBusy(false);
+        }
+      }}
+    >
+      <p className="text-sm text-amber-950">
+        종료·취소된 점검은 조회만 가능합니다. 추가 진단이나 보고서 개정이
+        필요하면 관리자가 재개해 주세요.
+      </p>
+      {props.canReopen && (
+        <fieldset disabled={busy} className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            aria-label={`${props.inspection.inspection_code} 재개 사유`}
+            placeholder="재개 사유"
+            value={reason}
+            maxLength={1000}
+            required
+            onChange={(event) => setReason(event.target.value)}
+          />
+          <Button type="submit" disabled={busy || !reason.trim()}>
+            점검 재개
+          </Button>
+        </fieldset>
+      )}
+    </form>
+  );
+}
+
 function InspectionsView(
   props: SharedProps & {
     canCreate: boolean;
@@ -2778,6 +2879,8 @@ function InspectionsView(
   const [notes, setNotes] = useState('');
   const [expertId, setExpertId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [rowBusy, setRowBusy] = useState(false);
+  const rowLock = useRef(false);
 
   const effectivePlantId = plantId || props.plants[0]?.id || '';
   const draft = JSON.stringify([
@@ -2790,7 +2893,10 @@ function InspectionsView(
     expertId,
   ]);
   const baseline = useRef(draft);
-  useDraftProtection(props.canCreate && draft !== baseline.current, busy);
+  useDraftProtection(
+    props.canCreate && draft !== baseline.current,
+    busy || rowBusy,
+  );
   const createLock = useRef(false);
 
   async function create(event: SyntheticEvent<HTMLFormElement>) {
@@ -2845,28 +2951,47 @@ function InspectionsView(
   }
 
   async function updateStatus(id: string, status: string) {
+    if (rowLock.current) return;
+    rowLock.current = true;
+    setRowBusy(true);
     props.setNotice(null);
-    const { error } = await props.supabase
-      .from('inspections')
-      .update({ status })
-      .eq('id', id);
-    if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-    else {
-      props.setNotice({ tone: 'success', text: '점검 상태를 변경했습니다.' });
-      await props.refresh();
+    try {
+      const { error } = await props.supabase
+        .from('inspections')
+        .update({ status })
+        .eq('id', id);
+      if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
+      else {
+        props.setNotice({ tone: 'success', text: '점검 상태를 변경했습니다.' });
+        await props.refresh();
+      }
+    } finally {
+      rowLock.current = false;
+      setRowBusy(false);
     }
   }
 
   async function assignExpert(id: string, assignedExpertUserId: string) {
+    if (rowLock.current) return;
+    rowLock.current = true;
+    setRowBusy(true);
     props.setNotice(null);
-    const { error } = await props.supabase
-      .from('inspections')
-      .update({ assigned_expert_user_id: assignedExpertUserId || null })
-      .eq('id', id);
-    if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-    else {
-      props.setNotice({ tone: 'success', text: '담당 전문가를 변경했습니다.' });
-      await props.refresh();
+    try {
+      const { error } = await props.supabase
+        .from('inspections')
+        .update({ assigned_expert_user_id: assignedExpertUserId || null })
+        .eq('id', id);
+      if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
+      else {
+        props.setNotice({
+          tone: 'success',
+          text: '담당 전문가를 변경했습니다.',
+        });
+        await props.refresh();
+      }
+    } finally {
+      rowLock.current = false;
+      setRowBusy(false);
     }
   }
 
@@ -2875,11 +3000,6 @@ function InspectionsView(
   const activeExperts = props.members.filter(
     (member) => member.role === 'expert' && member.status === 'active',
   );
-  const availableStatuses = props.expertMode
-    ? inspectionStatuses.filter(([key]) =>
-        ['expert_review', 'approval'].includes(key),
-      )
-    : inspectionStatuses;
 
   return (
     <>
@@ -3006,81 +3126,115 @@ function InspectionsView(
           </form>
         )}
         <section className="space-y-3">
-          {props.inspections.map((inspection) => (
-            <article
-              key={inspection.id}
-              className="rounded-2xl border bg-white p-5 shadow-sm"
-            >
-              <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>{plantName(inspection.plant_id)}</strong>
-                    <StatusPill>{inspection.inspection_code}</StatusPill>
+          {props.inspections.map((inspection) => {
+            const hasOpenReport = props.reports.some(
+              (r) =>
+                r.inspection_id === inspection.id &&
+                ['draft', 'review', 'approved'].includes(r.status),
+            );
+            const availableStatuses = inspectionStatuses.filter(
+              ([key]) =>
+                !hasOpenReport &&
+                manualInspectionStatuses(
+                  inspection.status,
+                  props.expertMode,
+                ).includes(key),
+            );
+            return (
+              <article
+                key={inspection.id}
+                className="rounded-2xl border bg-white p-5 shadow-sm"
+              >
+                <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <strong>{plantName(inspection.plant_id)}</strong>
+                      <StatusPill>{inspection.inspection_code}</StatusPill>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-600">
+                      {inspection.purpose || '목적 미입력'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      예정 {formatDateTime(inspection.scheduled_at)} · 마감{' '}
+                      {formatDateTime(inspection.due_at)}
+                    </p>
                   </div>
-                  <p className="mt-2 text-sm text-slate-600">
-                    {inspection.purpose || '목적 미입력'}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-400">
-                    예정 {formatDateTime(inspection.scheduled_at)} · 마감{' '}
-                    {formatDateTime(inspection.due_at)}
-                  </p>
+                  <div className="flex flex-col gap-2 sm:items-end">
+                    {!props.requesterMode && !props.expertMode && (
+                      <select
+                        className="h-9 max-w-56 rounded-lg border bg-white px-3 text-xs"
+                        value={inspection.assigned_expert_user_id ?? ''}
+                        onChange={(e) =>
+                          void assignExpert(inspection.id, e.target.value)
+                        }
+                        disabled={
+                          !props.canUpdate ||
+                          rowBusy ||
+                          inspectionLocked(inspection.status)
+                        }
+                        aria-label="담당 전문가"
+                      >
+                        <option value="">전문가 미배정</option>
+                        {activeExperts.map((member) => (
+                          <option key={member.user_id} value={member.user_id}>
+                            {props.profiles[member.user_id]?.display_name ||
+                              props.profiles[member.user_id]?.email ||
+                              member.user_id}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {props.canUpdate ? (
+                      <select
+                        className="h-9 rounded-lg border bg-white px-3 text-sm font-semibold text-slate-700"
+                        value={inspection.status}
+                        disabled={
+                          busy ||
+                          rowBusy ||
+                          !availableStatuses.length ||
+                          inspectionLocked(inspection.status)
+                        }
+                        aria-label={`${inspection.inspection_code} 점검 상태`}
+                        onChange={(e) =>
+                          void updateStatus(inspection.id, e.target.value)
+                        }
+                      >
+                        {!availableStatuses.some(
+                          ([key]) => key === inspection.status,
+                        ) && (
+                          <option value={inspection.status}>
+                            {statusLabel(inspection.status, inspectionStatuses)}
+                          </option>
+                        )}
+                        {availableStatuses.map(([key, label]) => (
+                          <option key={key} value={key}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <StatusPill>
+                        {statusLabel(inspection.status, inspectionStatuses)}
+                      </StatusPill>
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-col gap-2 sm:items-end">
-                  {!props.requesterMode && !props.expertMode && (
-                    <select
-                      className="h-9 max-w-56 rounded-lg border bg-white px-3 text-xs"
-                      value={inspection.assigned_expert_user_id ?? ''}
-                      onChange={(e) =>
-                        void assignExpert(inspection.id, e.target.value)
-                      }
-                      disabled={!props.canUpdate}
-                      aria-label="담당 전문가"
-                    >
-                      <option value="">전문가 미배정</option>
-                      {activeExperts.map((member) => (
-                        <option key={member.user_id} value={member.user_id}>
-                          {props.profiles[member.user_id]?.display_name ||
-                            props.profiles[member.user_id]?.email ||
-                            member.user_id}
-                        </option>
-                      ))}
-                    </select>
+                {inspection.notes && (
+                  <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+                    {inspection.notes}
+                  </p>
+                )}
+                {inspectionLocked(inspection.status) &&
+                  !props.requesterMode && (
+                    <InspectionReopen
+                      {...props}
+                      inspection={inspection}
+                      canReopen={!props.expertMode && props.canUpdate}
+                    />
                   )}
-                  {props.canUpdate ? (
-                    <select
-                      className="h-9 rounded-lg border bg-white px-3 text-sm font-semibold text-slate-700"
-                      value={inspection.status}
-                      onChange={(e) =>
-                        void updateStatus(inspection.id, e.target.value)
-                      }
-                    >
-                      {!availableStatuses.some(
-                        ([key]) => key === inspection.status,
-                      ) && (
-                        <option value={inspection.status}>
-                          {statusLabel(inspection.status, inspectionStatuses)}
-                        </option>
-                      )}
-                      {availableStatuses.map(([key, label]) => (
-                        <option key={key} value={key}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <StatusPill>
-                      {statusLabel(inspection.status, inspectionStatuses)}
-                    </StatusPill>
-                  )}
-                </div>
-              </div>
-              {inspection.notes && (
-                <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600">
-                  {inspection.notes}
-                </p>
-              )}
-            </article>
-          ))}
+              </article>
+            );
+          })}
           {props.inspections.length === 0 && (
             <EmptyState
               icon={ClipboardCheck}
@@ -3610,9 +3764,32 @@ function ReportsView(
     {},
   );
   const effectiveInspectionId = inspectionId || props.inspections[0]?.id || '';
+  const [showAll, setShowAll] = useState(false);
+  const locked = inspectionLocked(
+    props.inspections.find((i) => i.id === effectiveInspectionId)?.status,
+  );
+  const openReport = props.reports.some(
+    (r) =>
+      r.inspection_id === effectiveInspectionId &&
+      ['draft', 'review', 'approved'].includes(r.status),
+  );
+  const visibleReports = inspectionRows(
+    props.reports,
+    effectiveInspectionId,
+    showAll,
+  );
+  const operationLock = useRef(false);
+  const pending = busy || transitioningId !== null;
+  useDraftProtection(
+    title !== '태양광 발전설비 열화상 점검 보고서' ||
+      Object.values(reasonByReport).some((v) => Boolean(v.trim())),
+    pending,
+  );
 
   async function create(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (operationLock.current || locked || openReport) return;
+    operationLock.current = true;
     setBusy(true);
     try {
       const { data, error } = await props.supabase.rpc('create_report_draft', {
@@ -3620,6 +3797,7 @@ function ReportsView(
         p_title: title.trim(),
       });
       if (error) throw error;
+      setTitle('태양광 발전설비 열화상 점검 보고서');
       props.setNotice({
         tone: 'success',
         text: `보고서 ${data.version}차 초안을 만들었습니다.`,
@@ -3628,11 +3806,14 @@ function ReportsView(
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setBusy(false);
     }
   }
 
   async function transitionStatus(report: Report, status: string) {
+    if (operationLock.current) return;
+    operationLock.current = true;
     setTransitioningId(report.id);
     props.setNotice(null);
     try {
@@ -3656,6 +3837,7 @@ function ReportsView(
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setTransitioningId(null);
     }
   }
@@ -3702,6 +3884,7 @@ function ReportsView(
             <Field label="보고서 제목">
               <Input
                 value={title}
+                disabled={locked || pending || openReport}
                 onChange={(e) => setTitle(e.target.value)}
                 required
               />
@@ -3709,14 +3892,49 @@ function ReportsView(
             <Button
               type="submit"
               className="w-full"
-              disabled={!effectiveInspectionId || busy}
+              disabled={
+                !effectiveInspectionId || pending || locked || openReport
+              }
             >
               {busy ? <Loader2 className="animate-spin" /> : <Plus />}초안 생성
             </Button>
+            {locked && (
+              <p className="text-sm text-amber-800">
+                관리자가 점검을 재개한 뒤 새 보고서를 만들 수 있습니다.
+              </p>
+            )}
+            {!locked && openReport && (
+              <p className="text-sm text-slate-600">
+                작성·검토 중인 보고서를 먼저 처리해 주세요.
+              </p>
+            )}
           </form>
         ) : null}
         <section className="space-y-3">
-          {props.reports.map((report) => (
+          <label className="flex min-h-11 items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={showAll}
+              onChange={(e) => setShowAll(e.target.checked)}
+            />
+            전체 점검 보고서 보기
+          </label>
+          {!props.canCreate && (
+            <Field label="점검">
+              <select
+                className="h-10 w-full rounded-lg border bg-white px-3"
+                value={effectiveInspectionId}
+                onChange={(e) => setInspectionId(e.target.value)}
+              >
+                {props.inspections.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.inspection_code}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {visibleReports.map((report) => (
             <article
               key={report.id}
               className="rounded-2xl border bg-white p-5 shadow-sm"
@@ -3750,7 +3968,14 @@ function ReportsView(
                 <div className="mt-4 flex justify-end border-t pt-4">
                   <Button
                     size="sm"
-                    disabled={transitioningId === report.id}
+                    disabled={
+                      pending ||
+                      inspectionLocked(
+                        props.inspections.find(
+                          (i) => i.id === report.inspection_id,
+                        )?.status,
+                      )
+                    }
                     onClick={() => void transitionStatus(report, 'review')}
                   >
                     {transitioningId === report.id ? (
@@ -3781,6 +4006,14 @@ function ReportsView(
                     >
                       <Input
                         value={reasonByReport[report.id] ?? ''}
+                        disabled={
+                          pending ||
+                          inspectionLocked(
+                            props.inspections.find(
+                              (i) => i.id === report.inspection_id,
+                            )?.status,
+                          )
+                        }
                         onChange={(event) =>
                           setReasonByReport((current) => ({
                             ...current,
@@ -3796,7 +4029,14 @@ function ReportsView(
                           <Button
                             variant="outline"
                             size="sm"
-                            disabled={transitioningId === report.id}
+                            disabled={
+                              pending ||
+                              inspectionLocked(
+                                props.inspections.find(
+                                  (i) => i.id === report.inspection_id,
+                                )?.status,
+                              )
+                            }
                             onClick={() =>
                               void transitionStatus(report, 'draft')
                             }
@@ -3805,7 +4045,14 @@ function ReportsView(
                           </Button>
                           <Button
                             size="sm"
-                            disabled={transitioningId === report.id}
+                            disabled={
+                              pending ||
+                              inspectionLocked(
+                                props.inspections.find(
+                                  (i) => i.id === report.inspection_id,
+                                )?.status,
+                              )
+                            }
                             onClick={() =>
                               void transitionStatus(report, 'approved')
                             }
@@ -3819,7 +4066,14 @@ function ReportsView(
                           <Button
                             variant="outline"
                             size="sm"
-                            disabled={transitioningId === report.id}
+                            disabled={
+                              pending ||
+                              inspectionLocked(
+                                props.inspections.find(
+                                  (i) => i.id === report.inspection_id,
+                                )?.status,
+                              )
+                            }
                             onClick={() =>
                               void transitionStatus(report, 'draft')
                             }
@@ -3828,12 +4082,25 @@ function ReportsView(
                           </Button>
                           <Button
                             size="sm"
-                            disabled={transitioningId === report.id}
+                            disabled={
+                              pending ||
+                              inspectionLocked(
+                                props.inspections.find(
+                                  (i) => i.id === report.inspection_id,
+                                )?.status,
+                              )
+                            }
                             onClick={() =>
                               void transitionStatus(report, 'published')
                             }
                           >
-                            최종 발행
+                            {props.reports.some(
+                              (r) =>
+                                r.inspection_id === report.inspection_id &&
+                                r.status === 'published',
+                            )
+                              ? '개정 발행 · 이전 발행본 대체'
+                              : '최종 발행'}
                           </Button>
                         </>
                       )}
@@ -3841,7 +4108,14 @@ function ReportsView(
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={transitioningId === report.id}
+                          disabled={
+                            pending ||
+                            inspectionLocked(
+                              props.inspections.find(
+                                (i) => i.id === report.inspection_id,
+                              )?.status,
+                            )
+                          }
                           onClick={() =>
                             void transitionStatus(report, 'withdrawn')
                           }
@@ -3859,7 +4133,7 @@ function ReportsView(
               )}
             </article>
           ))}
-          {props.reports.length === 0 && (
+          {visibleReports.length === 0 && (
             <EmptyState
               icon={FileText}
               title="작성된 보고서가 없습니다"
@@ -3881,8 +4155,23 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
   const [vendor, setVendor] = useState('');
   const [busy, setBusy] = useState(false);
   const effectiveInspectionId = inspectionId || props.inspections[0]?.id || '';
+  const [showAll, setShowAll] = useState(false);
+  const visibleMaintenance = inspectionRows(
+    props.maintenance,
+    effectiveInspectionId,
+    showAll,
+  );
+  const lock = useRef(false);
+  useDraftProtection(
+    title !== '열화상 이상 후보 현장 점검' ||
+      priority !== 'normal' ||
+      Boolean(vendor.trim()),
+    busy,
+  );
   async function create(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (lock.current) return;
+    lock.current = true;
     setBusy(true);
     try {
       const { error } = await props.supabase
@@ -3897,6 +4186,9 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
           created_by: props.session.user.id,
         });
       if (error) throw error;
+      setTitle('열화상 이상 후보 현장 점검');
+      setVendor('');
+      setPriority('normal');
       props.setNotice({
         tone: 'success',
         text: '유지보수 요청을 등록했습니다.',
@@ -3905,21 +4197,29 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      lock.current = false;
       setBusy(false);
     }
   }
   async function updateStatus(item: Maintenance, status: string) {
-    const updates: Database['public']['Tables']['maintenance_requests']['Update'] =
-      { status };
-    if (status === 'completed') updates.completed_at = new Date().toISOString();
-    const { error } = await props.supabase
-      .from('maintenance_requests')
-      .update(updates)
-      .eq('id', item.id);
-    if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-    else {
-      props.setNotice({ tone: 'success', text: '조치 상태를 변경했습니다.' });
-      await props.refresh();
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    try {
+      const updates: Database['public']['Tables']['maintenance_requests']['Update'] =
+        { status };
+      const { error } = await props.supabase
+        .from('maintenance_requests')
+        .update(updates)
+        .eq('id', item.id);
+      if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
+      else {
+        props.setNotice({ tone: 'success', text: '조치 상태를 변경했습니다.' });
+        await props.refresh();
+      }
+    } finally {
+      lock.current = false;
+      setBusy(false);
     }
   }
   const inspectionLabel = (id: string) =>
@@ -3929,7 +4229,7 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
       <PageHeading
         eyebrow="MAINTENANCE LOOP"
         title="유지보수 요청·조치 이력"
-        copy="판정 결과에서 후속 조치를 만들고, 배정·견적·일정·완료 상태를 한 흐름으로 남깁니다."
+        copy="후속 조치를 등록하고 진행 상태를 관리합니다. 연결된 견적에서 업체를 선택하면 이 작업의 업체 정보에도 반영됩니다."
       />
       <div
         className={`grid gap-5 ${props.canWrite ? 'xl:grid-cols-[380px_1fr]' : ''}`}
@@ -3940,63 +4240,88 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
             className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <h2 className="font-bold">새 조치 요청</h2>
-            {!props.canWrite && <ReadOnlyNote />}
-            <Field label="관련 점검">
+            <fieldset disabled={busy} className="space-y-4">
+              {!props.canWrite && <ReadOnlyNote />}
+              <Field label="관련 점검">
+                <select
+                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={effectiveInspectionId}
+                  onChange={(e) => setInspectionId(e.target.value)}
+                  disabled={!props.canWrite}
+                >
+                  {props.inspections.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {inspectionLabel(item.id)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="작업명">
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  disabled={!props.canWrite}
+                  required
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="우선순위">
+                  <select
+                    className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                    value={priority}
+                    onChange={(e) => setPriority(e.target.value)}
+                    disabled={!props.canWrite}
+                  >
+                    <option value="low">낮음</option>
+                    <option value="normal">보통</option>
+                    <option value="high">높음</option>
+                    <option value="urgent">긴급</option>
+                  </select>
+                </Field>
+                <Field label="업체">
+                  <Input
+                    value={vendor}
+                    onChange={(e) => setVendor(e.target.value)}
+                    disabled={!props.canWrite}
+                  />
+                </Field>
+              </div>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={!props.canWrite || !effectiveInspectionId || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" /> : <Plus />}조치
+                요청 등록
+              </Button>
+            </fieldset>
+          </form>
+        )}
+        <section className="space-y-3">
+          <label className="flex min-h-11 items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={showAll}
+              onChange={(e) => setShowAll(e.target.checked)}
+            />
+            전체 점검 유지보수 보기
+          </label>
+          {!props.canWrite && (
+            <Field label="점검">
               <select
-                className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                className="h-10 w-full rounded-lg border bg-white px-3"
                 value={effectiveInspectionId}
                 onChange={(e) => setInspectionId(e.target.value)}
-                disabled={!props.canWrite}
               >
-                {props.inspections.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {inspectionLabel(item.id)}
+                {props.inspections.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.inspection_code}
                   </option>
                 ))}
               </select>
             </Field>
-            <Field label="작업명">
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                disabled={!props.canWrite}
-                required
-              />
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="우선순위">
-                <select
-                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                  disabled={!props.canWrite}
-                >
-                  <option value="low">낮음</option>
-                  <option value="normal">보통</option>
-                  <option value="high">높음</option>
-                  <option value="urgent">긴급</option>
-                </select>
-              </Field>
-              <Field label="업체">
-                <Input
-                  value={vendor}
-                  onChange={(e) => setVendor(e.target.value)}
-                  disabled={!props.canWrite}
-                />
-              </Field>
-            </div>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={!props.canWrite || !effectiveInspectionId || busy}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : <Plus />}조치 요청
-              등록
-            </Button>
-          </form>
-        )}
-        <section className="space-y-3">
-          {props.maintenance.map((item) => (
+          )}
+          {visibleMaintenance.map((item) => (
             <article
               key={item.id}
               className="rounded-2xl border bg-white p-5 shadow-sm"
@@ -4020,12 +4345,18 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
                     {item.vendor_name || '업체 미정'} · 등록{' '}
                     {formatDateTime(item.created_at)}
                   </p>
+                  {item.selected_quote_id && (
+                    <p className="mt-1 text-sm text-teal-700">
+                      선택 견적 연결 · 업체 자동 반영
+                    </p>
+                  )}
                 </div>
                 <select
                   className="h-9 rounded-lg border bg-white px-3 text-sm font-semibold"
                   value={item.status}
+                  aria-label={`${item.title} 조치 상태`}
                   onChange={(e) => void updateStatus(item, e.target.value)}
-                  disabled={!props.canWrite}
+                  disabled={!props.canWrite || busy}
                 >
                   {maintenanceStatuses.map(([key, label]) => (
                     <option key={key} value={key}>
@@ -4036,7 +4367,7 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
               </div>
             </article>
           ))}
-          {props.maintenance.length === 0 && (
+          {visibleMaintenance.length === 0 && (
             <EmptyState
               icon={Wrench}
               title="등록된 조치가 없습니다"
@@ -4073,6 +4404,17 @@ function PartnerQuotesView(
   const [savingQuoteId, setSavingQuoteId] = useState<string | null>(null);
   const [selectingQuoteId, setSelectingQuoteId] = useState<string | null>(null);
 
+  const operationLock = useRef(false);
+  const anyBusy =
+    busy ||
+    requestBusy ||
+    Boolean(savingPartnerId || savingQuoteId || selectingQuoteId);
+  const drafts = useSectionDraftProtection(anyBusy);
+  function beginOperation() {
+    if (operationLock.current) return false;
+    operationLock.current = true;
+    return true;
+  }
   const partnerById = Object.fromEntries(
     props.partners.map((partner) => [partner.id, partner]),
   );
@@ -4082,7 +4424,7 @@ function PartnerQuotesView(
   const activePartners = props.partners.filter(
     (partner) => partner.status === 'active',
   );
-  const linkedRequesters = props.plantRequesters.filter(
+  const linkedRequesters = props.quoteRequesters.filter(
     (access) => access.plant_id === quotePlantId,
   );
   const linkedInspections = props.inspections.filter(
@@ -4096,6 +4438,7 @@ function PartnerQuotesView(
 
   async function createPartner(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!beginOperation()) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     setBusy(true);
@@ -4130,10 +4473,12 @@ function PartnerQuotesView(
       setName('');
       setRating('');
       form.reset();
+      drafts.markSaved(form);
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setBusy(false);
     }
   }
@@ -4143,7 +4488,9 @@ function PartnerQuotesView(
     partner: Partner,
   ) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    if (!beginOperation()) return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
     setSavingPartnerId(partner.id);
     props.setNotice(null);
     try {
@@ -4174,10 +4521,12 @@ function PartnerQuotesView(
         tone: 'success',
         text: `${partner.name} 업체 정보를 수정했습니다. 변경 기록도 저장했습니다.`,
       });
+      drafts.markSaved(form);
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setSavingPartnerId(null);
     }
   }
@@ -4194,7 +4543,10 @@ function PartnerQuotesView(
 
   async function createQuoteRequest(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!beginOperation()) return;
+    const form = event.currentTarget;
     if (selectedPartnerIds.length !== 3) {
+      operationLock.current = false;
       props.setNotice({
         tone: 'error',
         text: '견적을 받을 업체 3곳을 선택하세요.',
@@ -4212,7 +4564,7 @@ function PartnerQuotesView(
           p_title: quoteTitle.trim(),
           p_scope_summary: quoteScope.trim(),
           p_response_due_at: quoteDueAt
-            ? new Date(quoteDueAt).toISOString()
+            ? parseKoreanInput(quoteDueAt, '회신 마감')
             : null,
           p_partner_ids: selectedPartnerIds,
           p_inspection_id: quoteInspectionId || null,
@@ -4228,10 +4580,12 @@ function PartnerQuotesView(
       setQuoteScope('');
       setQuoteDueAt('');
       setSelectedPartnerIds([]);
+      drafts.markSaved(form);
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setRequestBusy(false);
     }
   }
@@ -4241,7 +4595,9 @@ function PartnerQuotesView(
     quoteId: string,
   ) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    if (!beginOperation()) return;
+    const element = event.currentTarget;
+    const form = new FormData(element);
     const days = formText(form, 'estimated_days').trim();
     setSavingQuoteId(quoteId);
     props.setNotice(null);
@@ -4264,15 +4620,18 @@ function PartnerQuotesView(
         tone: 'success',
         text: '업체 견적 회신을 저장했습니다.',
       });
+      drafts.markSaved(element);
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setSavingQuoteId(null);
     }
   }
 
   async function selectQuote(quoteId: string) {
+    if (!beginOperation()) return;
     setSelectingQuoteId(quoteId);
     props.setNotice(null);
     try {
@@ -4284,10 +4643,12 @@ function PartnerQuotesView(
         tone: 'success',
         text: '업체를 선택했습니다. 선택 기록은 관리자 화면과 감사기록에 함께 남습니다.',
       });
+
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      operationLock.current = false;
       setSelectingQuoteId(null);
     }
   }
@@ -4410,703 +4771,716 @@ function PartnerQuotesView(
   }
 
   return (
-    <>
-      <PageHeading
-        eyebrow="PARTNER & QUOTE"
-        title="업체·견적 관리"
-        copy="업체를 등록하고 견적 요청과 회신을 관리합니다."
-      />
-      <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
-        <div className="space-y-5">
-          <form
-            onSubmit={createPartner}
-            className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
-          >
-            <div>
-              <h2 className="font-bold">업체 등록</h2>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                공개 비교정보와 관리자 전용 연락처·등록정보를 함께 저장합니다.
-              </p>
-            </div>
-            {!props.canWrite && <ReadOnlyNote />}
-            <Field label="업체명">
-              <Input
-                name="name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                disabled={!props.canWrite}
-                maxLength={160}
-                required
-              />
-            </Field>
-            <Field label="업체 유형">
-              <select
-                name="partner_type"
-                className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                value={partnerType}
-                onChange={(event) => setPartnerType(event.target.value)}
-                disabled={!props.canWrite}
-              >
-                {Object.entries(partnerTypeLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="가용 지역" hint="쉼표로 구분">
-              <Input
-                name="service_regions"
-                value={serviceRegions}
-                onChange={(event) => setServiceRegions(event.target.value)}
-                disabled={!props.canWrite}
-                placeholder="경기, 서울"
-              />
-            </Field>
-            <Field label="평점" hint="신규 업체는 비워둘 수 있습니다.">
-              <Input
-                name="rating"
-                type="number"
-                min="0"
-                max="5"
-                step="0.1"
-                value={rating}
-                onChange={(event) => setRating(event.target.value)}
-                disabled={!props.canWrite}
-              />
-            </Field>
-            <div className="border-t pt-4">
-              <h3 className="text-sm font-bold text-slate-700">
-                관리자 전용 상세정보
-              </h3>
-            </div>
-            <Field label="사업자등록번호" hint="선택 사항 · 숫자 10자리">
-              <Input
-                name="business_registration_number"
-                inputMode="numeric"
-                maxLength={12}
-                disabled={!props.canWrite}
-                placeholder="123-45-67890"
-              />
-            </Field>
-            <Field label="면허·등록번호" hint="선택 사항">
-              <Input
-                name="license_registration_number"
-                maxLength={100}
-                disabled={!props.canWrite}
-              />
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="담당자명">
+    <div ref={drafts.ref} onInput={drafts.onInput} onChange={drafts.onChange}>
+      <fieldset disabled={anyBusy} className="min-w-0 space-y-5">
+        <PageHeading
+          eyebrow="PARTNER & QUOTE"
+          title="업체·견적 관리"
+          copy="업체를 등록하고 견적 요청과 회신을 관리합니다."
+        />
+        <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
+          <div className="space-y-5">
+            <form
+              onSubmit={createPartner}
+              className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
+            >
+              <div>
+                <h2 className="font-bold">업체 등록</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  공개 비교정보와 관리자 전용 연락처·등록정보를 함께 저장합니다.
+                </p>
+              </div>
+              {!props.canWrite && <ReadOnlyNote />}
+              <Field label="업체명">
                 <Input
-                  name="contact_name"
+                  name="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  disabled={!props.canWrite}
+                  maxLength={160}
+                  required
+                />
+              </Field>
+              <Field label="업체 유형">
+                <select
+                  name="partner_type"
+                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={partnerType}
+                  onChange={(event) => setPartnerType(event.target.value)}
+                  disabled={!props.canWrite}
+                >
+                  {Object.entries(partnerTypeLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="가용 지역" hint="쉼표로 구분">
+                <Input
+                  name="service_regions"
+                  value={serviceRegions}
+                  onChange={(event) => setServiceRegions(event.target.value)}
+                  disabled={!props.canWrite}
+                  placeholder="경기, 서울"
+                />
+              </Field>
+              <Field label="평점" hint="신규 업체는 비워둘 수 있습니다.">
+                <Input
+                  name="rating"
+                  type="number"
+                  min="0"
+                  max="5"
+                  step="0.1"
+                  value={rating}
+                  onChange={(event) => setRating(event.target.value)}
+                  disabled={!props.canWrite}
+                />
+              </Field>
+              <div className="border-t pt-4">
+                <h3 className="text-sm font-bold text-slate-700">
+                  관리자 전용 상세정보
+                </h3>
+              </div>
+              <Field label="사업자등록번호" hint="선택 사항 · 숫자 10자리">
+                <Input
+                  name="business_registration_number"
+                  inputMode="numeric"
+                  maxLength={12}
+                  disabled={!props.canWrite}
+                  placeholder="123-45-67890"
+                />
+              </Field>
+              <Field label="면허·등록번호" hint="선택 사항">
+                <Input
+                  name="license_registration_number"
                   maxLength={100}
                   disabled={!props.canWrite}
                 />
               </Field>
-              <Field label="담당자 연락처">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="담당자명">
+                  <Input
+                    name="contact_name"
+                    maxLength={100}
+                    disabled={!props.canWrite}
+                  />
+                </Field>
+                <Field label="담당자 연락처">
+                  <Input
+                    name="contact_phone"
+                    type="tel"
+                    maxLength={50}
+                    disabled={!props.canWrite}
+                  />
+                </Field>
+              </div>
+              <Field label="담당자 이메일">
                 <Input
-                  name="contact_phone"
-                  type="tel"
-                  maxLength={50}
+                  name="contact_email"
+                  type="email"
+                  maxLength={320}
                   disabled={!props.canWrite}
                 />
               </Field>
-            </div>
-            <Field label="담당자 이메일">
-              <Input
-                name="contact_email"
-                type="email"
-                maxLength={320}
-                disabled={!props.canWrite}
-              />
-            </Field>
-            <Field label="관리 메모">
-              <Textarea
-                name="notes"
-                rows={3}
-                maxLength={4000}
-                disabled={!props.canWrite}
-              />
-            </Field>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={!props.canWrite || busy}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : <Plus />}
-              업체 등록
-            </Button>
-          </form>
-          <form
-            onSubmit={createQuoteRequest}
-            className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
-          >
-            <div>
-              <h2 className="font-bold">새 견적 요청</h2>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                의뢰인과 업체 3곳을 연결하면 요청과 회신 대기 건이 한 번에
-                생성됩니다.
-              </p>
-            </div>
-            <Field label="발전소">
-              <select
-                className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
-                value={quotePlantId}
-                onChange={(event) => {
-                  const nextPlantId = event.target.value;
-                  setQuotePlantId(nextPlantId);
-                  setQuoteRequesterId(
-                    props.plantRequesters.find(
-                      (access) => access.plant_id === nextPlantId,
-                    )?.requester_user_id ?? '',
-                  );
-                  setQuoteInspectionId('');
-                  setQuoteMaintenanceId('');
-                }}
-                required
-              >
-                <option value="">발전소 선택</option>
-                {props.plants.map((plant) => (
-                  <option key={plant.id} value={plant.id}>
-                    {plant.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="의뢰인">
-              <select
-                className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
-                value={quoteRequesterId}
-                onChange={(event) => setQuoteRequesterId(event.target.value)}
-                disabled={!quotePlantId}
-                required
-              >
-                <option value="">연결 의뢰인 선택</option>
-                {linkedRequesters.map((access) => (
-                  <option
-                    key={access.requester_user_id}
-                    value={access.requester_user_id}
-                  >
-                    {props.profiles[access.requester_user_id]?.display_name ||
-                      props.profiles[access.requester_user_id]?.email ||
-                      access.requester_user_id}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {quotePlantId && linkedRequesters.length === 0 && (
-              <p className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                이 발전소에 의뢰인이 연결되지 않았습니다. 발전소 관리에서 먼저
-                의뢰인을 연결하세요.
-              </p>
-            )}
-            <Field label="연결 점검" hint="선택 사항">
-              <select
-                className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
-                value={quoteInspectionId}
-                onChange={(event) => {
-                  setQuoteInspectionId(event.target.value);
-                  setQuoteMaintenanceId('');
-                }}
-                disabled={!quotePlantId}
-              >
-                <option value="">점검을 연결하지 않음</option>
-                {linkedInspections.map((inspection) => (
-                  <option key={inspection.id} value={inspection.id}>
-                    {inspection.inspection_code} ·{' '}
-                    {inspection.purpose || '점검'}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="연결 유지보수" hint="선택 사항">
-              <select
-                className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
-                value={quoteMaintenanceId}
-                onChange={(event) => setQuoteMaintenanceId(event.target.value)}
-                disabled={!quoteInspectionId}
-              >
-                <option value="">유지보수 항목을 연결하지 않음</option>
-                {linkedMaintenance
-                  .filter(
-                    (maintenance) =>
-                      maintenance.inspection_id === quoteInspectionId,
-                  )
-                  .map((maintenance) => (
-                    <option key={maintenance.id} value={maintenance.id}>
-                      {maintenance.title}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <Field label="요청 제목">
-              <Input
-                value={quoteTitle}
-                onChange={(event) => setQuoteTitle(event.target.value)}
-                maxLength={200}
-                required
-              />
-            </Field>
-            <Field label="작업 범위">
-              <Textarea
-                value={quoteScope}
-                onChange={(event) => setQuoteScope(event.target.value)}
-                rows={3}
-                placeholder="교체·보수할 항목과 현장 조건"
-              />
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="회신 마감">
-                <Input
-                  type="datetime-local"
-                  value={quoteDueAt}
-                  onChange={(event) => setQuoteDueAt(event.target.value)}
+              <Field label="관리 메모">
+                <Textarea
+                  name="notes"
+                  rows={3}
+                  maxLength={4000}
+                  disabled={!props.canWrite}
                 />
               </Field>
-              <Field label="수수료율(%)">
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={!props.canWrite || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" /> : <Plus />}
+                업체 등록
+              </Button>
+            </form>
+            <form
+              onSubmit={createQuoteRequest}
+              className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
+            >
+              <div>
+                <h2 className="font-bold">새 견적 요청</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  의뢰인과 업체 3곳을 연결하면 요청과 회신 대기 건이 한 번에
+                  생성됩니다.
+                </p>
+              </div>
+              <Field label="발전소">
+                <select
+                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={quotePlantId}
+                  onChange={(event) => {
+                    const nextPlantId = event.target.value;
+                    setQuotePlantId(nextPlantId);
+                    setQuoteRequesterId(
+                      props.quoteRequesters.find(
+                        (access) => access.plant_id === nextPlantId,
+                      )?.requester_user_id ?? '',
+                    );
+                    setQuoteInspectionId('');
+                    setQuoteMaintenanceId('');
+                  }}
+                  required
+                >
+                  <option value="">발전소 선택</option>
+                  {props.plants.map((plant) => (
+                    <option key={plant.id} value={plant.id}>
+                      {plant.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="견적 선택 담당자">
+                <select
+                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={quoteRequesterId}
+                  onChange={(event) => setQuoteRequesterId(event.target.value)}
+                  disabled={!quotePlantId}
+                  required
+                >
+                  <option value="">연결 의뢰인 선택</option>
+                  {linkedRequesters.map((access) => (
+                    <option
+                      key={access.requester_user_id}
+                      value={access.requester_user_id}
+                    >
+                      {props.profiles[access.requester_user_id]?.display_name ||
+                        props.profiles[access.requester_user_id]?.email ||
+                        access.requester_user_id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {quotePlantId && linkedRequesters.length === 0 && (
+                <p className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                  견적을 선택할 활성 고객이 없습니다. 발전소의 의뢰인 연결 또는
+                  고객 관리의 담당자·발전소 연결을 확인하세요.
+                </p>
+              )}
+              <Field label="연결 점검" hint="선택 사항">
+                <select
+                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={quoteInspectionId}
+                  onChange={(event) => {
+                    setQuoteInspectionId(event.target.value);
+                    setQuoteMaintenanceId('');
+                  }}
+                  disabled={!quotePlantId}
+                >
+                  <option value="">점검을 연결하지 않음</option>
+                  {linkedInspections.map((inspection) => (
+                    <option key={inspection.id} value={inspection.id}>
+                      {inspection.inspection_code} ·{' '}
+                      {inspection.purpose || '점검'}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="연결 유지보수" hint="선택 사항">
+                <select
+                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={quoteMaintenanceId}
+                  onChange={(event) =>
+                    setQuoteMaintenanceId(event.target.value)
+                  }
+                  disabled={!quoteInspectionId}
+                >
+                  <option value="">유지보수 항목을 연결하지 않음</option>
+                  {linkedMaintenance
+                    .filter(
+                      (maintenance) =>
+                        maintenance.inspection_id === quoteInspectionId,
+                    )
+                    .map((maintenance) => (
+                      <option key={maintenance.id} value={maintenance.id}>
+                        {maintenance.title}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+              <Field label="요청 제목">
                 <Input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  value={commissionRate}
-                  onChange={(event) => setCommissionRate(event.target.value)}
+                  value={quoteTitle}
+                  onChange={(event) => setQuoteTitle(event.target.value)}
+                  maxLength={200}
                   required
                 />
               </Field>
-            </div>
-            <fieldset>
-              <legend className="text-sm font-semibold text-slate-700">
-                요청 업체 3곳
-              </legend>
-              <div className="mt-2 space-y-2">
-                {activePartners.map((partner) => (
-                  <label
-                    key={partner.id}
-                    aria-label={`${partner.name} 선택`}
-                    className="flex min-h-11 items-center justify-between gap-3 rounded-xl border bg-slate-50 px-3 py-2 text-sm"
-                  >
-                    <span className="min-w-0">
-                      <strong className="block truncate">{partner.name}</strong>
-                      <span className="text-xs text-slate-500">
-                        {partnerTypeLabels[partner.partner_type] ||
-                          partner.partner_type}
+              <Field label="작업 범위">
+                <Textarea
+                  value={quoteScope}
+                  onChange={(event) => setQuoteScope(event.target.value)}
+                  rows={3}
+                  placeholder="교체·보수할 항목과 현장 조건"
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="회신 마감">
+                  <Input
+                    type="datetime-local"
+                    value={quoteDueAt}
+                    onChange={(event) => setQuoteDueAt(event.target.value)}
+                  />
+                </Field>
+                <Field label="수수료율(%)">
+                  <Input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={commissionRate}
+                    onChange={(event) => setCommissionRate(event.target.value)}
+                    required
+                  />
+                </Field>
+              </div>
+              <fieldset>
+                <legend className="text-sm font-semibold text-slate-700">
+                  요청 업체 3곳
+                </legend>
+                <div className="mt-2 space-y-2">
+                  {activePartners.map((partner) => (
+                    <label
+                      key={partner.id}
+                      aria-label={`${partner.name} 선택`}
+                      className="flex min-h-11 items-center justify-between gap-3 rounded-xl border bg-slate-50 px-3 py-2 text-sm"
+                    >
+                      <span className="min-w-0">
+                        <strong className="block truncate">
+                          {partner.name}
+                        </strong>
+                        <span className="text-xs text-slate-500">
+                          {partnerTypeLabels[partner.partner_type] ||
+                            partner.partner_type}
+                        </span>
                       </span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      className="size-5 shrink-0 accent-teal-600"
-                      checked={selectedPartnerIds.includes(partner.id)}
-                      disabled={
-                        !selectedPartnerIds.includes(partner.id) &&
-                        selectedPartnerIds.length >= 3
-                      }
-                      onChange={() => togglePartner(partner.id)}
-                    />
-                  </label>
-                ))}
-                {activePartners.length < 3 && (
-                  <p className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                    사용 중인 업체를 최소 3곳 등록해야 견적 요청을 만들 수
-                    있습니다.
+                      <input
+                        type="checkbox"
+                        className="size-5 shrink-0 accent-teal-600"
+                        checked={selectedPartnerIds.includes(partner.id)}
+                        disabled={
+                          !selectedPartnerIds.includes(partner.id) &&
+                          selectedPartnerIds.length >= 3
+                        }
+                        onChange={() => togglePartner(partner.id)}
+                      />
+                    </label>
+                  ))}
+                  {activePartners.length < 3 && (
+                    <p className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                      사용 중인 업체를 최소 3곳 등록해야 견적 요청을 만들 수
+                      있습니다.
+                    </p>
+                  )}
+                </div>
+              </fieldset>
+              <Button
+                type="submit"
+                className="h-11 w-full"
+                disabled={
+                  requestBusy ||
+                  !quotePlantId ||
+                  !quoteRequesterId ||
+                  selectedPartnerIds.length !== 3
+                }
+              >
+                {requestBusy ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Handshake />
+                )}
+                업체 3곳에 요청 만들기
+              </Button>
+            </form>
+          </div>
+
+          <div className="space-y-5">
+            <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b px-5 py-4">
+                <h2 className="font-bold">
+                  등록 업체 {props.partners.length}곳
+                </h2>
+                <span className="text-xs text-slate-400">관리자 전용</span>
+              </div>
+              <div className="divide-y">
+                {props.partners.map((partner) => {
+                  const detail = privateDetailsByPartnerId[partner.id];
+                  return (
+                    <details key={partner.id} className="group p-5">
+                      <summary
+                        aria-label={`${partner.name} 업체 정보 편집`}
+                        className="flex cursor-pointer list-none flex-col items-start justify-between gap-3 sm:flex-row sm:items-center"
+                      >
+                        <div>
+                          <strong className="text-sm">{partner.name}</strong>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {partnerTypeLabels[partner.partner_type] ??
+                              partner.partner_type}{' '}
+                            ·{' '}
+                            {partner.service_regions.join(', ') ||
+                              '지역 미입력'}
+                            {detail?.contact_name
+                              ? ` · 담당 ${detail.contact_name}`
+                              : ''}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <StatusPill>
+                            {partner.status === 'active'
+                              ? `평점 ${partner.rating ?? '신규'}`
+                              : partner.status === 'inactive'
+                                ? '휴면'
+                                : '차단'}
+                          </StatusPill>
+                          <span className="text-xs font-semibold text-teal-700 group-open:hidden">
+                            정보 열기
+                          </span>
+                          <span className="hidden text-xs font-semibold text-teal-700 group-open:inline">
+                            닫기
+                          </span>
+                        </div>
+                      </summary>
+                      <form
+                        className="mt-5 space-y-4 border-t pt-5"
+                        onSubmit={(event) => void updatePartner(event, partner)}
+                      >
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <Field label="업체명">
+                            <Input
+                              name="name"
+                              defaultValue={partner.name}
+                              maxLength={160}
+                              required
+                            />
+                          </Field>
+                          <Field label="업체 유형">
+                            <select
+                              name="partner_type"
+                              className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                              defaultValue={partner.partner_type}
+                            >
+                              {Object.entries(partnerTypeLabels).map(
+                                ([value, label]) => (
+                                  <option key={value} value={value}>
+                                    {label}
+                                  </option>
+                                ),
+                              )}
+                            </select>
+                          </Field>
+                          <Field label="가용 지역" hint="쉼표로 구분">
+                            <Input
+                              name="service_regions"
+                              defaultValue={partner.service_regions.join(', ')}
+                              placeholder="경기, 서울"
+                            />
+                          </Field>
+                          <Field label="평점">
+                            <Input
+                              name="rating"
+                              type="number"
+                              min="0"
+                              max="5"
+                              step="0.1"
+                              defaultValue={partner.rating ?? ''}
+                            />
+                          </Field>
+                          <Field label="업체 상태">
+                            <select
+                              name="status"
+                              className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                              defaultValue={partner.status}
+                            >
+                              <option value="active">사용 중</option>
+                              <option value="inactive">휴면</option>
+                              <option value="blocked">차단</option>
+                            </select>
+                          </Field>
+                          <Field
+                            label="사업자등록번호"
+                            hint="선택 사항 · 숫자 10자리"
+                          >
+                            <Input
+                              name="business_registration_number"
+                              inputMode="numeric"
+                              maxLength={12}
+                              defaultValue={
+                                detail?.business_registration_number ?? ''
+                              }
+                            />
+                          </Field>
+                          <Field label="면허·등록번호">
+                            <Input
+                              name="license_registration_number"
+                              maxLength={100}
+                              defaultValue={
+                                detail?.license_registration_number ?? ''
+                              }
+                            />
+                          </Field>
+                          <Field label="담당자명">
+                            <Input
+                              name="contact_name"
+                              maxLength={100}
+                              defaultValue={detail?.contact_name ?? ''}
+                            />
+                          </Field>
+                          <Field label="담당자 연락처">
+                            <Input
+                              name="contact_phone"
+                              type="tel"
+                              maxLength={50}
+                              defaultValue={detail?.contact_phone ?? ''}
+                            />
+                          </Field>
+                          <Field label="담당자 이메일">
+                            <Input
+                              name="contact_email"
+                              type="email"
+                              maxLength={320}
+                              defaultValue={detail?.contact_email ?? ''}
+                            />
+                          </Field>
+                        </div>
+                        <Field label="관리 메모">
+                          <Textarea
+                            name="notes"
+                            rows={3}
+                            maxLength={4000}
+                            defaultValue={detail?.notes ?? ''}
+                          />
+                        </Field>
+                        <Button
+                          type="submit"
+                          size="sm"
+                          className="w-full sm:w-auto"
+                          disabled={savingPartnerId !== null}
+                        >
+                          {savingPartnerId === partner.id ? (
+                            <Loader2 className="animate-spin" />
+                          ) : (
+                            <CheckCircle2 />
+                          )}
+                          업체 정보 저장
+                        </Button>
+                      </form>
+                    </details>
+                  );
+                })}
+                {props.partners.length === 0 && (
+                  <p className="px-5 py-10 text-center text-sm text-slate-400">
+                    왼쪽에서 첫 업체를 등록하세요.
                   </p>
                 )}
               </div>
-            </fieldset>
-            <Button
-              type="submit"
-              className="h-11 w-full"
-              disabled={
-                requestBusy ||
-                !quotePlantId ||
-                !quoteRequesterId ||
-                selectedPartnerIds.length !== 3
-              }
-            >
-              {requestBusy ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Handshake />
-              )}
-              업체 3곳에 요청 만들기
-            </Button>
-          </form>
-        </div>
+            </section>
 
-        <div className="space-y-5">
-          <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b px-5 py-4">
-              <h2 className="font-bold">등록 업체 {props.partners.length}곳</h2>
-              <span className="text-xs text-slate-400">관리자 전용</span>
-            </div>
-            <div className="divide-y">
-              {props.partners.map((partner) => {
-                const detail = privateDetailsByPartnerId[partner.id];
-                return (
-                  <details key={partner.id} className="group p-5">
-                    <summary
-                      aria-label={`${partner.name} 업체 정보 편집`}
-                      className="flex cursor-pointer list-none flex-col items-start justify-between gap-3 sm:flex-row sm:items-center"
-                    >
-                      <div>
-                        <strong className="text-sm">{partner.name}</strong>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {partnerTypeLabels[partner.partner_type] ??
-                            partner.partner_type}{' '}
-                          ·{' '}
-                          {partner.service_regions.join(', ') || '지역 미입력'}
-                          {detail?.contact_name
-                            ? ` · 담당 ${detail.contact_name}`
-                            : ''}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <StatusPill>
-                          {partner.status === 'active'
-                            ? `평점 ${partner.rating ?? '신규'}`
-                            : partner.status === 'inactive'
-                              ? '휴면'
-                              : '차단'}
-                        </StatusPill>
-                        <span className="text-xs font-semibold text-teal-700 group-open:hidden">
-                          정보 열기
-                        </span>
-                        <span className="hidden text-xs font-semibold text-teal-700 group-open:inline">
-                          닫기
-                        </span>
-                      </div>
-                    </summary>
-                    <form
-                      className="mt-5 space-y-4 border-t pt-5"
-                      onSubmit={(event) => void updatePartner(event, partner)}
-                    >
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <Field label="업체명">
-                          <Input
-                            name="name"
-                            defaultValue={partner.name}
-                            maxLength={160}
-                            required
-                          />
-                        </Field>
-                        <Field label="업체 유형">
-                          <select
-                            name="partner_type"
-                            className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                            defaultValue={partner.partner_type}
-                          >
-                            {Object.entries(partnerTypeLabels).map(
-                              ([value, label]) => (
-                                <option key={value} value={value}>
-                                  {label}
-                                </option>
-                              ),
-                            )}
-                          </select>
-                        </Field>
-                        <Field label="가용 지역" hint="쉼표로 구분">
-                          <Input
-                            name="service_regions"
-                            defaultValue={partner.service_regions.join(', ')}
-                            placeholder="경기, 서울"
-                          />
-                        </Field>
-                        <Field label="평점">
-                          <Input
-                            name="rating"
-                            type="number"
-                            min="0"
-                            max="5"
-                            step="0.1"
-                            defaultValue={partner.rating ?? ''}
-                          />
-                        </Field>
-                        <Field label="업체 상태">
-                          <select
-                            name="status"
-                            className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                            defaultValue={partner.status}
-                          >
-                            <option value="active">사용 중</option>
-                            <option value="inactive">휴면</option>
-                            <option value="blocked">차단</option>
-                          </select>
-                        </Field>
-                        <Field
-                          label="사업자등록번호"
-                          hint="선택 사항 · 숫자 10자리"
-                        >
-                          <Input
-                            name="business_registration_number"
-                            inputMode="numeric"
-                            maxLength={12}
-                            defaultValue={
-                              detail?.business_registration_number ?? ''
-                            }
-                          />
-                        </Field>
-                        <Field label="면허·등록번호">
-                          <Input
-                            name="license_registration_number"
-                            maxLength={100}
-                            defaultValue={
-                              detail?.license_registration_number ?? ''
-                            }
-                          />
-                        </Field>
-                        <Field label="담당자명">
-                          <Input
-                            name="contact_name"
-                            maxLength={100}
-                            defaultValue={detail?.contact_name ?? ''}
-                          />
-                        </Field>
-                        <Field label="담당자 연락처">
-                          <Input
-                            name="contact_phone"
-                            type="tel"
-                            maxLength={50}
-                            defaultValue={detail?.contact_phone ?? ''}
-                          />
-                        </Field>
-                        <Field label="담당자 이메일">
-                          <Input
-                            name="contact_email"
-                            type="email"
-                            maxLength={320}
-                            defaultValue={detail?.contact_email ?? ''}
-                          />
-                        </Field>
-                      </div>
-                      <Field label="관리 메모">
-                        <Textarea
-                          name="notes"
-                          rows={3}
-                          maxLength={4000}
-                          defaultValue={detail?.notes ?? ''}
-                        />
-                      </Field>
-                      <Button
-                        type="submit"
-                        size="sm"
-                        className="w-full sm:w-auto"
-                        disabled={savingPartnerId !== null}
-                      >
-                        {savingPartnerId === partner.id ? (
-                          <Loader2 className="animate-spin" />
-                        ) : (
-                          <CheckCircle2 />
-                        )}
-                        업체 정보 저장
-                      </Button>
-                    </form>
-                  </details>
-                );
-              })}
-              {props.partners.length === 0 && (
-                <p className="px-5 py-10 text-center text-sm text-slate-400">
-                  왼쪽에서 첫 업체를 등록하세요.
+            <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="border-b px-5 py-4">
+                <h2 className="font-bold">
+                  견적 요청 흐름 {props.quoteRequests.length}건
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  조치 항목 → 업체 3곳 요청 → 회신 → 의뢰인 선택 → 수수료 산정
                 </p>
-              )}
-            </div>
-          </section>
-
-          <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
-            <div className="border-b px-5 py-4">
-              <h2 className="font-bold">
-                견적 요청 흐름 {props.quoteRequests.length}건
-              </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                조치 항목 → 업체 3곳 요청 → 회신 → 의뢰인 선택 → 수수료 산정
-              </p>
-            </div>
-            <div className="divide-y">
-              {props.quoteRequests.map((request) => {
-                const quotes = props.partnerQuotes.filter(
-                  (quote) => quote.quote_request_id === request.id,
-                );
-                const requestLocked = [
-                  'selected',
-                  'completed',
-                  'cancelled',
-                ].includes(request.status);
-                return (
-                  <div key={request.id} className="p-4 sm:p-5">
-                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-                      <div>
-                        <strong className="text-sm">{request.title}</strong>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {request.request_code} · 업체 {quotes.length}곳 연결 ·
-                          회신{' '}
-                          {
-                            quotes.filter((quote) =>
-                              [
-                                'submitted',
-                                'selected',
-                                'not_selected',
-                                'completed',
-                              ].includes(quote.status),
-                            ).length
-                          }
-                          건
-                        </p>
+              </div>
+              <div className="divide-y">
+                {props.quoteRequests.map((request) => {
+                  const quotes = props.partnerQuotes.filter(
+                    (quote) => quote.quote_request_id === request.id,
+                  );
+                  const requestLocked = [
+                    'selected',
+                    'completed',
+                    'cancelled',
+                  ].includes(request.status);
+                  return (
+                    <div key={request.id} className="p-4 sm:p-5">
+                      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                        <div>
+                          <strong className="text-sm">{request.title}</strong>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {request.request_code} · 업체 {quotes.length}곳 연결
+                            · 회신{' '}
+                            {
+                              quotes.filter((quote) =>
+                                [
+                                  'submitted',
+                                  'selected',
+                                  'not_selected',
+                                  'completed',
+                                ].includes(quote.status),
+                              ).length
+                            }
+                            건
+                          </p>
+                        </div>
+                        <StatusPill>
+                          {quoteRequestStatusLabels[request.status] ??
+                            request.status}
+                        </StatusPill>
                       </div>
-                      <StatusPill>
-                        {quoteRequestStatusLabels[request.status] ??
-                          request.status}
-                      </StatusPill>
-                    </div>
-                    {request.scope_summary && (
-                      <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">
-                        {request.scope_summary}
+                      {request.scope_summary && (
+                        <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">
+                          {request.scope_summary}
+                        </p>
+                      )}
+                      <p className="mt-3 text-xs text-slate-500">
+                        회신 마감 {formatDateTime(request.response_due_at)}
                       </p>
-                    )}
-                    <p className="mt-3 text-xs text-slate-500">
-                      회신 마감 {formatDateTime(request.response_due_at)}
-                    </p>
-                    <details className="mt-4 rounded-2xl border bg-slate-50">
-                      <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate-700">
-                        업체별 견적 입력·수정
-                      </summary>
-                      <div className="space-y-3 border-t p-3 sm:p-4">
-                        {quotes.map((quote) => {
-                          const partner = partnerById[quote.partner_id];
-                          return (
-                            <form
-                              key={quote.id}
-                              className="space-y-3 rounded-xl border bg-white p-4"
-                              onSubmit={(event) =>
-                                void saveQuote(event, quote.id)
-                              }
-                            >
-                              <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-                                <div>
-                                  <strong className="text-sm">
-                                    {partner?.name || '업체 정보 확인 중'}
-                                  </strong>
-                                  <p className="mt-1 text-xs text-slate-500">
-                                    {partner
-                                      ? partnerTypeLabels[partner.partner_type]
-                                      : '업체'}{' '}
-                                    ·{' '}
-                                    {partnerQuoteStatusLabels[quote.status] ||
-                                      quote.status}
-                                  </p>
-                                </div>
-                                {quote.commission_amount_krw != null && (
-                                  <span className="text-xs font-semibold text-slate-500">
-                                    수수료{' '}
-                                    {formatWon(quote.commission_amount_krw)}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                <Field label="견적 금액(원)">
-                                  <Input
-                                    name="amount_krw"
-                                    type="number"
-                                    min="0"
-                                    step="1"
-                                    defaultValue={quote.amount_krw ?? ''}
-                                    disabled={requestLocked}
-                                    required
-                                  />
-                                </Field>
-                                <Field label="예상 기간(일)">
-                                  <Input
-                                    name="estimated_days"
-                                    type="number"
-                                    min="1"
-                                    step="1"
-                                    defaultValue={quote.estimated_days ?? ''}
-                                    disabled={requestLocked}
-                                  />
-                                </Field>
-                                <Field label="수수료율(%)">
-                                  <Input
-                                    name="commission_rate"
-                                    type="number"
-                                    min="0"
-                                    max="100"
-                                    step="0.01"
-                                    defaultValue={quote.commission_rate}
-                                    disabled={requestLocked}
-                                    required
-                                  />
-                                </Field>
-                                <Field label="작업 시작 예정일">
-                                  <Input
-                                    name="proposed_start_on"
-                                    type="date"
-                                    defaultValue={quote.proposed_start_on ?? ''}
-                                    disabled={requestLocked}
-                                  />
-                                </Field>
-                                <Field label="견적 유효일">
-                                  <Input
-                                    name="valid_until"
-                                    type="date"
-                                    defaultValue={quote.valid_until ?? ''}
-                                    disabled={requestLocked}
-                                  />
-                                </Field>
-                              </div>
-                              <Field label="작업 내용">
-                                <Textarea
-                                  name="scope"
-                                  rows={2}
-                                  defaultValue={quote.scope ?? ''}
-                                  disabled={requestLocked}
-                                />
-                              </Field>
-                              <Field label="조건·제외 사항">
-                                <Textarea
-                                  name="conditions"
-                                  rows={2}
-                                  defaultValue={quote.conditions ?? ''}
-                                  disabled={requestLocked}
-                                />
-                              </Field>
-                              <Button
-                                type="submit"
-                                size="sm"
-                                className="w-full sm:w-auto"
-                                disabled={
-                                  requestLocked || savingQuoteId !== null
+                      <details className="mt-4 rounded-2xl border bg-slate-50">
+                        <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate-700">
+                          업체별 견적 입력·수정
+                        </summary>
+                        <div className="space-y-3 border-t p-3 sm:p-4">
+                          {quotes.map((quote) => {
+                            const partner = partnerById[quote.partner_id];
+                            return (
+                              <form
+                                key={quote.id}
+                                className="space-y-3 rounded-xl border bg-white p-4"
+                                onSubmit={(event) =>
+                                  void saveQuote(event, quote.id)
                                 }
                               >
-                                {savingQuoteId === quote.id ? (
-                                  <Loader2 className="animate-spin" />
-                                ) : (
-                                  <CheckCircle2 />
-                                )}
-                                견적 회신 저장
-                              </Button>
-                            </form>
-                          );
-                        })}
-                      </div>
-                    </details>
+                                <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+                                  <div>
+                                    <strong className="text-sm">
+                                      {partner?.name || '업체 정보 확인 중'}
+                                    </strong>
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      {partner
+                                        ? partnerTypeLabels[
+                                            partner.partner_type
+                                          ]
+                                        : '업체'}{' '}
+                                      ·{' '}
+                                      {partnerQuoteStatusLabels[quote.status] ||
+                                        quote.status}
+                                    </p>
+                                  </div>
+                                  {quote.commission_amount_krw != null && (
+                                    <span className="text-xs font-semibold text-slate-500">
+                                      수수료{' '}
+                                      {formatWon(quote.commission_amount_krw)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                  <Field label="견적 금액(원)">
+                                    <Input
+                                      name="amount_krw"
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      defaultValue={quote.amount_krw ?? ''}
+                                      disabled={requestLocked}
+                                      required
+                                    />
+                                  </Field>
+                                  <Field label="예상 기간(일)">
+                                    <Input
+                                      name="estimated_days"
+                                      type="number"
+                                      min="1"
+                                      step="1"
+                                      defaultValue={quote.estimated_days ?? ''}
+                                      disabled={requestLocked}
+                                    />
+                                  </Field>
+                                  <Field label="수수료율(%)">
+                                    <Input
+                                      name="commission_rate"
+                                      type="number"
+                                      min="0"
+                                      max="100"
+                                      step="0.01"
+                                      defaultValue={quote.commission_rate}
+                                      disabled={requestLocked}
+                                      required
+                                    />
+                                  </Field>
+                                  <Field label="작업 시작 예정일">
+                                    <Input
+                                      name="proposed_start_on"
+                                      type="date"
+                                      defaultValue={
+                                        quote.proposed_start_on ?? ''
+                                      }
+                                      disabled={requestLocked}
+                                    />
+                                  </Field>
+                                  <Field label="견적 유효일">
+                                    <Input
+                                      name="valid_until"
+                                      type="date"
+                                      defaultValue={quote.valid_until ?? ''}
+                                      disabled={requestLocked}
+                                    />
+                                  </Field>
+                                </div>
+                                <Field label="작업 내용">
+                                  <Textarea
+                                    name="scope"
+                                    rows={2}
+                                    defaultValue={quote.scope ?? ''}
+                                    disabled={requestLocked}
+                                  />
+                                </Field>
+                                <Field label="조건·제외 사항">
+                                  <Textarea
+                                    name="conditions"
+                                    rows={2}
+                                    defaultValue={quote.conditions ?? ''}
+                                    disabled={requestLocked}
+                                  />
+                                </Field>
+                                <Button
+                                  type="submit"
+                                  size="sm"
+                                  className="w-full sm:w-auto"
+                                  disabled={
+                                    requestLocked || savingQuoteId !== null
+                                  }
+                                >
+                                  {savingQuoteId === quote.id ? (
+                                    <Loader2 className="animate-spin" />
+                                  ) : (
+                                    <CheckCircle2 />
+                                  )}
+                                  견적 회신 저장
+                                </Button>
+                              </form>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    </div>
+                  );
+                })}
+                {props.quoteRequests.length === 0 && (
+                  <div className="px-5 py-10 text-center">
+                    <p className="text-sm font-semibold text-slate-600">
+                      진행 중인 견적 요청이 없습니다.
+                    </p>
+                    <p className="mt-2 text-xs leading-5 text-slate-400">
+                      왼쪽 양식에서 발전소·의뢰인·업체 3곳을 선택해 요청을
+                      시작하세요.
+                    </p>
                   </div>
-                );
-              })}
-              {props.quoteRequests.length === 0 && (
-                <div className="px-5 py-10 text-center">
-                  <p className="text-sm font-semibold text-slate-600">
-                    진행 중인 견적 요청이 없습니다.
-                  </p>
-                  <p className="mt-2 text-xs leading-5 text-slate-400">
-                    왼쪽 양식에서 발전소·의뢰인·업체 3곳을 선택해 요청을
-                    시작하세요.
-                  </p>
-                </div>
-              )}
-            </div>
-          </section>
+                )}
+              </div>
+            </section>
+          </div>
         </div>
-      </div>
-    </>
+      </fieldset>
+    </div>
   );
 }
 
