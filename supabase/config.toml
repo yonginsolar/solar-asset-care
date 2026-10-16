@@ -247,6 +247,14 @@ otp_expiry = 3600
 subject = "[SolarScope] 태양광 진단 플랫폼 이용 초대"
 content_path = "./supabase/templates/invite.html"
 
+[auth.email.template.confirmation]
+subject = "[SolarScope] 회원가입 이메일 인증"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "[SolarScope] 비밀번호 변경 안내"
+content_path = "./supabase/templates/recovery.html"
+
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
 # enabled = true

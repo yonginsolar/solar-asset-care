@@ -1,5 +1,5 @@
-import { LiveApp } from '@/components/live/live-app';
+import { PublicHome } from '@/components/public-home';
 
 export default function Home() {
-  return <LiveApp />;
+  return <PublicHome />;
 }

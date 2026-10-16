@@ -33,8 +33,8 @@ const keys = JSON.parse(
   execFileSync(
     'npx',
     [
-      '--no-install',
-      'supabase',
+      '--yes',
+      'supabase@2.121.0',
       'projects',
       'api-keys',
       '--project-ref',
@@ -43,7 +43,7 @@ const keys = JSON.parse(
       '--output',
       'json',
     ],
-    { encoding: 'utf8', maxBuffer: 1048576 },
+    { encoding: 'utf8', maxBuffer: 1048576, stdio: ['ignore', 'pipe', 'pipe'] },
   ),
 );
 const secret = keys.find((k) => k.api_key?.startsWith('sb_secret_'))?.api_key;
@@ -172,6 +172,10 @@ try {
       },
     ]),
   );
+  for (const actor of [client, otherClient]) await required(actor.client.rpc('complete_service_profile', {
+    p_org: organization.id, p_details: { name: '가상 수용시험 고객', phone: '01012345678', kind: 'individual' },
+    p_policy_id: null, p_accept: false,
+  }));
   const plant = await required(
     owner.client
       .from('plants')

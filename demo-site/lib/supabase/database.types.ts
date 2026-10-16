@@ -1409,6 +1409,24 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      get_public_service_policy: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      get_service_onboarding: { Args: { p_org: string }; Returns: Json };
+      complete_service_profile: {
+        Args: {
+          p_org: string;
+          p_details: Json;
+          p_policy_id: string | null;
+          p_accept: boolean;
+        };
+        Returns: undefined;
+      };
+      service_admin_action: {
+        Args: { p_org: string; p_action: string; p_payload?: Json };
+        Returns: Json;
+      };
       get_my_account_state: {
         Args: Record<PropertyKey, never>;
         Returns: Json;

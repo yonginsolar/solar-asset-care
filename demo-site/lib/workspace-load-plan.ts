@@ -37,10 +37,17 @@ const plans: Record<string, readonly WorkspaceCollection[]> = {
   ],
   members: ['organization_members'],
   account: [],
+  'service-settings': [],
+  customers: ['plants'],
 };
 /** Data planning only; current Auth checks and database RLS remain authoritative. */
 export function workspaceCollections(
   view: string,
+  role?: string,
 ): readonly WorkspaceCollection[] {
+  if (view === 'dashboard' && role === 'client')
+    return ['plants', 'inspections', 'reports', 'maintenance_requests'];
+  if (view === 'dashboard' && role === 'expert')
+    return ['plants', 'inspections', 'findings', 'reports'];
   return plans[view] ?? [];
 }

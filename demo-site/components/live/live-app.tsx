@@ -81,6 +81,18 @@ import {
   downloadInspectionOriginal,
 } from '@/lib/inspection-preview';
 import { InspectionPreviewButton } from './inspection-preview';
+import { AccountProfile } from './live-profile';
+import { ServiceSettingsView } from './live-service-settings';
+import { CustomersView } from './live-customers';
+import { AuditView } from './live-audit';
+import { serviceRpc, type Onboarding } from '@/lib/service-access';
+import {
+  portalForRole,
+  portalLabel,
+  portalPath,
+  portalTitle,
+  type Portal,
+} from '@/lib/portal';
 
 type Plant = Tables<'plants'>;
 type Inspection = Tables<'inspections'>;
@@ -118,6 +130,9 @@ type View =
   | 'maintenance'
   | 'partners'
   | 'members'
+  | 'service-settings'
+  | 'customers'
+  | 'audit'
   | 'account';
 
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
@@ -226,6 +241,9 @@ const navItems: Array<{
   { id: 'recycling', label: '재활용 인증서', icon: FileCheck2 },
   { id: 'partners', label: '업체·견적', icon: Handshake },
   { id: 'members', label: '관리자·사용자', icon: Users },
+  { id: 'customers', label: '고객 관리', icon: Building2 },
+  { id: 'service-settings', label: '운영 설정·약관', icon: ShieldCheck },
+  { id: 'audit', label: '운영 이력', icon: FileCheck2 },
   { id: 'account', label: '내 계정', icon: KeyRound },
 ];
 
@@ -349,27 +367,83 @@ function NoticeBar({ notice }: { notice: Notice }) {
   );
 }
 
-export function LiveApp() {
+export function LiveApp({
+  portal = 'auto',
+  signup = false,
+}: {
+  portal?: Portal;
+  signup?: boolean;
+}) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
   const [recoveringPassword, setRecoveringPassword] = useState(false);
   const [loading, setLoading] = useState(Boolean(supabase));
+  const [authProblem, setAuthProblem] = useState('');
 
   useEffect(() => {
     if (!supabase) return;
-    void supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setLoading(false);
-    });
+    let current = true;
+    const deadline = window.setTimeout(() => {
+      if (current) {
+        setAuthProblem(
+          '로그인 정보를 불러오지 못했습니다. 다시 시도해 주세요.',
+        );
+        setLoading(false);
+      }
+    }, 20000);
+    void supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!current) return;
+        window.clearTimeout(deadline);
+        if (error)
+          setAuthProblem(
+            '로그인 정보를 확인하지 못했습니다. 다시 시도해 주세요.',
+          );
+        else {
+          setSession(data.session);
+          setAuthProblem('');
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (current) {
+          window.clearTimeout(deadline);
+          setAuthProblem(
+            '로그인 정보를 확인하지 못했습니다. 다시 시도해 주세요.',
+          );
+          setLoading(false);
+        }
+      });
     const { data } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
+      setAuthProblem('');
+      setLoading(false);
       if (event === 'PASSWORD_RECOVERY') setRecoveringPassword(true);
     });
-    return () => data.subscription.unsubscribe();
+    return () => {
+      current = false;
+      window.clearTimeout(deadline);
+      data.subscription.unsubscribe();
+    };
   }, [supabase]);
 
   if (loading) return <FullScreenLoading label="불러오는 중입니다." />;
   if (!supabase) return <ConfigurationMissing />;
+  if (authProblem)
+    return (
+      <main className="grid min-h-svh place-items-center bg-slate-50 px-4">
+        <section className="w-full max-w-md rounded-3xl border bg-white p-7">
+          <Brand />
+          <p role="alert" className="mt-7 text-sm">
+            {authProblem}
+          </p>
+          <Button className="mt-5" onClick={() => window.location.reload()}>
+            다시 불러오기
+          </Button>
+        </section>
+      </main>
+    );
   if (recoveringPassword && session) {
     return (
       <UpdatePasswordPanel
@@ -378,8 +452,10 @@ export function LiveApp() {
       />
     );
   }
-  if (!session) return <AuthPanel supabase={supabase} />;
-  return <WorkspaceGate supabase={supabase} session={session} />;
+  if (!session) return <AuthPanel supabase={supabase} signup={signup} />;
+  return (
+    <WorkspaceGate supabase={supabase} session={session} portal={portal} />
+  );
 }
 
 function FullScreenLoading({ label }: { label: string }) {
@@ -430,13 +506,33 @@ function ConfigurationMissing() {
   );
 }
 
-function AuthPanel({ supabase }: { supabase: SupabaseClient<Database> }) {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
+function AuthPanel({
+  supabase,
+  signup = false,
+}: {
+  supabase: SupabaseClient<Database>;
+  signup?: boolean;
+}) {
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>(
+    signup ? 'signup' : 'signin',
+  );
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    if (params.has('error')) {
+      setNotice({
+        tone: 'error',
+        text: '링크가 만료되었거나 이미 사용되었습니다. 초대는 관리자에게 다시 요청하고, 비밀번호 재설정은 아래 메뉴를 이용해 주세요.',
+      });
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
 
   async function submit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -459,6 +555,8 @@ function AuthPanel({ supabase }: { supabase: SupabaseClient<Database> }) {
           text: '비밀번호 변경 메일을 보냈습니다. 메일의 링크는 한 번만 사용해 주세요.',
         });
       } else if (mode === 'signup') {
+        if (password !== passwordConfirm)
+          throw new Error('비밀번호 확인이 일치하지 않습니다.');
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
@@ -507,7 +605,7 @@ function AuthPanel({ supabase }: { supabase: SupabaseClient<Database> }) {
             {mode !== 'signin' && (
               <p className="mt-3 text-sm leading-6 text-slate-500">
                 {mode === 'signup'
-                  ? '전문가·관리자는 초대 메일로 가입해 주세요.'
+                  ? '이메일 인증 후 고객정보 입력과 이용 동의를 완료합니다. 전문가·관리자는 초대 메일로 가입해 주세요.'
                   : '가입한 이메일로 비밀번호 변경 링크를 보내드립니다.'}
               </p>
             )}
@@ -547,6 +645,18 @@ function AuthPanel({ supabase }: { supabase: SupabaseClient<Database> }) {
                     }
                     minLength={8}
                     required
+                  />
+                </Field>
+              )}
+              {mode === 'signup' && (
+                <Field label="비밀번호 확인">
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={passwordConfirm}
+                    onChange={(e) => setPasswordConfirm(e.target.value)}
+                    required
+                    minLength={8}
                   />
                 </Field>
               )}
@@ -755,24 +865,38 @@ function Field({
 function WorkspaceGate({
   supabase,
   session,
+  portal,
 }: {
   supabase: SupabaseClient<Database>;
   session: Session;
+  portal: Portal;
 }) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [accountState, setAccountState] = useState<AccountState | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice>(null);
+  const [onboarding, setOnboarding] = useState<Onboarding | null>(null);
+  const workspaceRead = useRef<{
+    sequence: number;
+    controller: AbortController | null;
+  }>({ sequence: 0, controller: null });
 
   const loadWorkspace = useCallback(async () => {
+    const sequence = ++workspaceRead.current.sequence;
+    workspaceRead.current.controller?.abort();
+    const controller = new AbortController();
+    workspaceRead.current.controller = controller;
+    const timer = window.setTimeout(() => controller.abort(), 20000);
     setLoading(true);
     setNotice(null);
     setWorkspace(null);
+    setOnboarding(null);
     try {
-      const { data: stateData, error: stateError } = await supabase.rpc(
-        'get_my_account_state',
-      );
+      const { data: stateData, error: stateError } = await supabase
+        .rpc('get_my_account_state')
+        .abortSignal(controller.signal);
       if (stateError) throw stateError;
+      if (sequence !== workspaceRead.current.sequence) return;
       const state = parseAccountState(stateData);
       setAccountState(state);
       if (state.needsInitialPassword || state.accessRemoved) return;
@@ -783,33 +907,60 @@ function WorkspaceGate({
         .eq('status', 'active')
         .order('created_at')
         .limit(1)
+        .abortSignal(controller.signal)
         .maybeSingle();
       if (memberError) throw memberError;
       if (!membership) {
         setWorkspace(null);
         return;
       }
+      const details = await serviceRpc<Onboarding>(
+        supabase,
+        'get_service_onboarding',
+        { p_org: membership.organization_id },
+        controller.signal,
+      );
+      if (sequence !== workspaceRead.current.sequence) return;
+      setOnboarding(details);
+      if (!details.ready) return;
+      if (portal === 'auto') {
+        window.location.replace(portalPath(membership.role));
+        return;
+      }
       const { data: organization, error: organizationError } = await supabase
         .from('organizations')
         .select('*')
         .eq('id', membership.organization_id)
+        .abortSignal(controller.signal)
         .single();
       if (organizationError) throw organizationError;
+      if (sequence !== workspaceRead.current.sequence) return;
       setWorkspace({
         membership,
         organization,
         superAdminUserId: state.superAdminUserId,
       });
     } catch (error) {
-      setNotice({ tone: 'error', text: errorMessage(error) });
+      if (sequence === workspaceRead.current.sequence)
+        setNotice({
+          tone: 'error',
+          text: controller.signal.aborted
+            ? '계정 조회가 지연됩니다. 다시 확인을 눌러 주세요.'
+            : errorMessage(error),
+        });
     } finally {
-      setLoading(false);
+      window.clearTimeout(timer);
+      if (sequence === workspaceRead.current.sequence) setLoading(false);
     }
-  }, [session.user.id, supabase]);
+  }, [session.user.id, supabase, portal]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      workspaceRead.current.sequence++;
+      workspaceRead.current.controller?.abort();
+    };
   }, [loadWorkspace]);
 
   if (loading) return <FullScreenLoading label="불러오는 중입니다." />;
@@ -858,6 +1009,30 @@ function WorkspaceGate({
       </main>
     );
   }
+  if (onboarding && !onboarding.ready && accountState?.organizationId) {
+    return (
+      <main className="min-h-svh bg-[#eef3f5] px-4 py-8">
+        <div className="mx-auto max-w-2xl">
+          <div className="mb-6 flex items-center justify-between">
+            <Brand />
+            <Button
+              variant="ghost"
+              onClick={() => void supabase.auth.signOut()}
+            >
+              로그아웃
+            </Button>
+          </div>
+          <AccountProfile
+            supabase={supabase}
+            organizationId={accountState.organizationId}
+            initial={onboarding}
+            required
+            onComplete={() => void loadWorkspace()}
+          />
+        </div>
+      </main>
+    );
+  }
   if (!workspace) {
     return (
       <OrganizationOnboarding
@@ -866,6 +1041,30 @@ function WorkspaceGate({
         notice={notice}
         onReady={loadWorkspace}
       />
+    );
+  }
+  if (
+    portal !== 'auto' &&
+    portalForRole(workspace.membership.role) !== portal
+  ) {
+    return (
+      <main className="grid min-h-svh place-items-center bg-slate-50 px-4">
+        <section className="w-full max-w-md rounded-3xl border bg-white p-7">
+          <Brand />
+          <h1 className="mt-8 text-xl font-bold">
+            내 작업공간으로 이동해 주세요
+          </h1>
+          <p className="mt-3 text-sm text-slate-600">
+            현재 계정은 {roleLabels[workspace.membership.role]} 계정입니다.
+          </p>
+          <Link
+            href={portalPath(workspace.membership.role)}
+            className={buttonVariants({ className: 'mt-6 w-full min-h-11' })}
+          >
+            {portalTitle(workspace.membership.role)} 열기
+          </Link>
+        </section>
+      </main>
     );
   }
   return (
@@ -888,141 +1087,62 @@ function OrganizationOnboarding({
   notice: Notice;
   onReady: () => Promise<void>;
 }) {
-  const [name, setName] = useState('솔라이음');
-  const [slug, setSlug] = useState('solar-ieum');
-  const [setupCode, setSetupCode] = useState('');
   const [busy, setBusy] = useState(false);
-  const [requesterBusy, setRequesterBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(initialNotice);
-
-  async function registerRequester() {
-    setRequesterBusy(true);
+  const lock = useRef(false);
+  async function connect() {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
     setNotice(null);
     try {
       const { error } = await supabase.rpc('register_requester');
       if (error) throw error;
-      setNotice({
-        tone: 'success',
-        text: '의뢰인 계정을 만들었습니다. 이제 본인 발전소를 등록할 수 있습니다.',
-      });
       await onReady();
     } catch (error) {
       setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
-      setRequesterBusy(false);
-    }
-  }
-
-  async function bootstrap(event: SyntheticEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setNotice(null);
-    try {
-      const { error } = await supabase.rpc('bootstrap_organization', {
-        p_name: name,
-        p_slug: slug,
-        p_setup_code: setupCode,
-      });
-      if (error) throw error;
-      setNotice({
-        tone: 'success',
-        text: '조직과 최초 관리자 권한을 만들었습니다.',
-      });
-      await onReady();
-    } catch (error) {
-      setNotice({ tone: 'error', text: errorMessage(error) });
-    } finally {
+      lock.current = false;
       setBusy(false);
     }
   }
-
   return (
-    <main className="min-h-screen bg-[#eef3f5] px-5 py-10">
-      <div className="mx-auto max-w-2xl rounded-3xl border bg-white p-7 shadow-sm md:p-10">
-        <div className="flex items-center justify-between gap-4">
-          <Brand />
-          <Button variant="outline" onClick={() => supabase.auth.signOut()}>
-            <LogOut /> 로그아웃
-          </Button>
+    <main className="grid min-h-svh place-items-center bg-[#eef3f5] px-4 py-8">
+      <section className="w-full max-w-lg rounded-3xl border bg-white p-7 sm:p-9">
+        <Brand />
+        <h1 className="mt-9 text-2xl font-bold">고객 가입 마무리</h1>
+        <p className="mt-4 break-all text-sm text-slate-600">
+          {session.user.email}
+        </p>
+        <ol className="mt-7 space-y-3 text-sm">
+          <li className="text-teal-700">1. 이메일 인증 완료</li>
+          <li className="font-semibold">2. 고객 계정 연결</li>
+          <li className="text-slate-500">3. 고객정보 입력·이용 동의</li>
+        </ol>
+        <p className="mt-6 text-sm leading-7 text-slate-600">
+          계속하면 개인 또는 사업자 고객 정보를 입력할 수 있습니다.
+          전문가·관리자는 관리자의 초대 메일을 이용해 주세요.
+        </p>
+        <div className="mt-5">
+          <NoticeBar notice={notice} />
         </div>
-        <div className="mt-12 grid gap-8 md:grid-cols-[0.85fr_1.15fr]">
-          <div>
-            <LockKeyhole className="size-9 text-teal-600" />
-            <h1 className="mt-4 text-2xl font-bold tracking-tight">
-              작업공간 연결
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              로그인 계정 <strong>{session.user.email}</strong>은 아직 조직에
-              연결되지 않았습니다.
-            </p>
-            <p className="mt-4 rounded-xl bg-slate-50 p-4 text-xs leading-5 text-slate-600">
-              직접 가입한 사용자는 의뢰인으로 시작합니다. 전문가와 추가 관리자는
-              기존 관리자가 보낸 초대 메일로만 계정을 만듭니다.
-            </p>
-          </div>
-          <div className="space-y-4 rounded-2xl border p-5">
-            <NoticeBar notice={notice} />
-            <div className="rounded-2xl bg-teal-50 p-5">
-              <h2 className="font-bold text-teal-950">의뢰인으로 시작</h2>
-              <p className="mt-2 text-xs leading-5 text-teal-800">
-                본인 발전소만 보이는 의뢰인 계정을 연결합니다. 발전소 등록과
-                점검 요청은 다음 화면에서 진행합니다.
-              </p>
-              <Button
-                className="mt-4 h-10 w-full"
-                type="button"
-                disabled={requesterBusy}
-                onClick={() => void registerRequester()}
-              >
-                {requesterBusy ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <ArrowRight />
-                )}
-                의뢰인 계정 연결
-              </Button>
-            </div>
-            <details className="rounded-2xl border bg-slate-50 p-4">
-              <summary className="cursor-pointer text-sm font-bold text-slate-700">
-                최초 관리자 작업공간 개설
-              </summary>
-              <form onSubmit={bootstrap} className="mt-4 space-y-4">
-                <Field label="조직명">
-                  <Input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    required
-                  />
-                </Field>
-                <Field label="조직 식별자" hint="영문 소문자·숫자·하이픈">
-                  <Input
-                    value={slug}
-                    onChange={(e) => setSlug(e.target.value.toLowerCase())}
-                    pattern="[a-z0-9][a-z0-9-]{1,62}"
-                    required
-                  />
-                </Field>
-                <Field label="1회용 개설 코드">
-                  <Input
-                    value={setupCode}
-                    onChange={(e) => setSetupCode(e.target.value.toUpperCase())}
-                    autoComplete="off"
-                    required
-                  />
-                </Field>
-                <Button type="submit" className="h-10 w-full" disabled={busy}>
-                  {busy ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <ShieldCheck />
-                  )}
-                  최초 관리자 만들기
-                </Button>
-              </form>
-            </details>
-          </div>
-        </div>
-      </div>
+        <Button
+          className="mt-3 min-h-11 w-full"
+          disabled={busy}
+          onClick={() => void connect()}
+        >
+          {busy ? <Loader2 className="animate-spin" /> : <ArrowRight />}고객정보
+          입력으로 계속
+        </Button>
+        <Button
+          variant="ghost"
+          className="mt-3 min-h-11 w-full"
+          disabled={busy}
+          onClick={() => void supabase.auth.signOut()}
+        >
+          다른 계정으로 로그인
+        </Button>
+      </section>
     </main>
   );
 }
@@ -1038,6 +1158,18 @@ function AdminConsole({
 }) {
   const [workspace, setWorkspace] = useState(initialWorkspace);
   const [view, setView] = useState<View>('dashboard');
+  const [pendingNavigation, setPendingNavigation] = useState<View | null>(null);
+  const changeView = (next: View) => {
+    if (next === view) return;
+    if (
+      window.dispatchEvent(
+        new Event('solarscope:navigate', { cancelable: true }),
+      )
+    ) {
+      setView(next);
+      setNotice(null);
+    } else setPendingNavigation(next);
+  };
   const [plants, setPlants] = useState<Plant[]>([]);
   const [inspections, setInspections] = useState<Inspection[]>([]);
   const [files, setFiles] = useState<InspectionFile[]>([]);
@@ -1090,7 +1222,7 @@ function AdminConsole({
     const current = () =>
       readRequest.current.sequence === sequence && currentView.current === view;
     const timeout = window.setTimeout(() => controller.abort(), 20_000);
-    const needed = workspaceCollections(view);
+    const needed = workspaceCollections(view, role);
     setLoading(true);
     try {
       const { data: stateData, error: stateError } = await supabase
@@ -1112,6 +1244,16 @@ function AdminConsole({
           ? current
           : { ...current, superAdminUserId: accountState.superAdminUserId },
       );
+      const readiness = await serviceRpc<Onboarding>(
+        supabase,
+        'get_service_onboarding',
+        { p_org: organizationId },
+        controller.signal,
+      );
+      if (!readiness.ready || readiness.role !== role) {
+        window.location.assign('/login');
+        return;
+      }
       const scoped = <T,>(
         collection: WorkspaceCollection,
         request: PromiseLike<{ data: T | null; error: unknown }> & {
@@ -1304,7 +1446,7 @@ function AdminConsole({
       window.clearTimeout(timeout);
       if (current()) setLoading(false);
     }
-  }, [organizationId, supabase, view]);
+  }, [organizationId, supabase, view, role]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0);
@@ -1339,14 +1481,40 @@ function AdminConsole({
 
   return (
     <div className="min-h-screen bg-[#f2f5f6] text-slate-900">
+      <AlertDialog
+        open={pendingNavigation !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingNavigation(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>입력한 내용을 두고 이동할까요?</AlertDialogTitle>
+            <AlertDialogDescription>
+              저장하지 않은 입력이 있습니다. 이동하면 이 화면의 입력이
+              사라집니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>이어서 작성</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingNavigation) setView(pendingNavigation);
+                setPendingNavigation(null);
+                setNotice(null);
+              }}
+            >
+              저장하지 않고 이동
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between gap-4 px-4 md:px-6">
           <Brand />
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block">
-              <strong className="block text-sm">
-                {workspace.organization.name}
-              </strong>
+              <strong className="block text-sm">{portalTitle(role)}</strong>
               <span className="block text-xs text-slate-500">
                 {roleLabels[role]} · {session.user.email}
               </span>
@@ -1382,14 +1550,14 @@ function AdminConsole({
             className="h-11 min-w-0 flex-1 rounded-xl border bg-white px-3 text-base font-semibold text-slate-800"
             value={view}
             onChange={(event) => {
-              setView(event.target.value as View);
+              changeView(event.target.value as View);
               setNotice(null);
             }}
             aria-label="작업 메뉴"
           >
             {visibleNavItems.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.label}
+                {portalLabel(role, item.id, item.label)}
               </option>
             ))}
           </select>
@@ -1406,7 +1574,7 @@ function AdminConsole({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    setView(item.id);
+                    changeView(item.id);
                     setNotice(null);
                   }}
                   className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition md:w-full ${
@@ -1415,7 +1583,8 @@ function AdminConsole({
                       : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                   }`}
                 >
-                  <Icon className="size-4" /> {item.label}
+                  <Icon className="size-4" />{' '}
+                  {portalLabel(role, item.id, item.label)}
                 </button>
               );
             })}
@@ -1458,11 +1627,17 @@ function AdminConsole({
                       <dd className="mt-1 font-semibold">{roleLabels[role]}</dd>
                     </div>
                   </dl>
+                  <div className="mb-5">
+                    <AccountProfile
+                      supabase={supabase}
+                      organizationId={organizationId}
+                    />
+                  </div>
                   <UpdatePasswordPanel supabase={supabase} embedded />
                 </>
               )}
               {view === 'dashboard' && (
-                <DashboardView {...shared} setView={setView} />
+                <DashboardView {...shared} setView={changeView} role={role} />
               )}
               {view === 'plants' && (
                 <PlantsView
@@ -1522,6 +1697,26 @@ function AdminConsole({
                   workspace={workspace}
                   setWorkspace={setWorkspace}
                   canWrite={isOwner}
+                />
+              )}
+              {view === 'service-settings' && isOwner && (
+                <ServiceSettingsView
+                  supabase={supabase}
+                  organizationId={organizationId}
+                  onPublished={() => window.location.assign('/login')}
+                />
+              )}
+              {view === 'customers' && isOwner && (
+                <CustomersView
+                  supabase={supabase}
+                  organizationId={organizationId}
+                  plants={plants}
+                />
+              )}
+              {view === 'audit' && isOwner && (
+                <AuditView
+                  supabase={supabase}
+                  organizationId={organizationId}
                 />
               )}
             </>
@@ -1610,7 +1805,9 @@ function MetricCard({
   );
 }
 
-function DashboardView(props: SharedProps & { setView: (view: View) => void }) {
+function DashboardView(
+  props: SharedProps & { setView: (view: View) => void; role: string },
+) {
   const activeInspections = props.inspections.filter(
     (item) => !['closed', 'cancelled'].includes(item.status),
   );
@@ -1625,13 +1822,49 @@ function DashboardView(props: SharedProps & { setView: (view: View) => void }) {
 
   return (
     <>
-      <PageHeading eyebrow="DASHBOARD" title="운영 현황" />
+      <PageHeading
+        eyebrow={
+          props.role === 'owner'
+            ? 'ADMIN'
+            : props.role === 'expert'
+              ? 'EXPERT WORKSPACE'
+              : 'MY SOLAR'
+        }
+        title={portalLabel(props.role, 'dashboard', '운영 현황')}
+        copy={
+          props.role === 'expert'
+            ? '배정된 점검 자료를 확인하고 판정·보고서 작성을 진행하세요.'
+            : props.role === 'client'
+              ? '발전소 등록부터 점검 의뢰, 진단 보고서 확인까지 한곳에서 관리하세요.'
+              : undefined
+        }
+        action={
+          props.role !== 'owner' ? (
+            <Button
+              onClick={() =>
+                props.setView(
+                  props.role === 'expert' ? 'findings' : 'inspections',
+                )
+              }
+            >
+              {props.role === 'expert' ? '후보 검토하기' : '점검 의뢰하기'}
+              <ArrowRight />
+            </Button>
+          ) : undefined
+        }
+      />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={Building2}
-          label="등록 발전소"
+          label={
+            props.role === 'expert'
+              ? '배정 발전소'
+              : props.role === 'client'
+                ? '내 발전소'
+                : '등록 발전소'
+          }
           value={props.plants.length}
-          note="조직 자산"
+          note={props.role === 'owner' ? '조직 자산' : '접근 가능한 발전소'}
         />
         <MetricCard
           icon={ClipboardCheck}
@@ -1641,25 +1874,43 @@ function DashboardView(props: SharedProps & { setView: (view: View) => void }) {
         />
         <MetricCard
           icon={ThermometerSun}
-          label="검토 후보"
-          value={pendingFindings.length}
-          note="전문가 판단 대기"
+          label={props.role === 'client' ? '진단 보고서' : '검토 후보'}
+          value={
+            props.role === 'client'
+              ? props.reports.filter((r) => r.status === 'published').length
+              : pendingFindings.length
+          }
+          note={props.role === 'client' ? '발행된 보고서' : '전문가 판단 대기'}
         />
         <MetricCard
           icon={Wrench}
-          label="진행 조치"
-          value={openMaintenance.length}
-          note="완료·취소 제외"
+          label={props.role === 'expert' ? '검토 요청 보고서' : '진행 조치'}
+          value={
+            props.role === 'expert'
+              ? props.reports.filter((r) => r.status === 'review').length
+              : openMaintenance.length
+          }
+          note={props.role === 'expert' ? '관리자 검토 대기' : '완료·취소 제외'}
         />
       </div>
 
       {props.plants.length === 0 ? (
         <EmptyState
           icon={Building2}
-          title="첫 발전소부터 등록하세요"
-          copy="발전소가 있어야 점검을 접수하고 열화상 원본을 연결할 수 있습니다."
-          action="발전소 등록"
-          onAction={() => props.setView('plants')}
+          title={
+            props.role === 'expert'
+              ? '아직 배정된 점검이 없습니다'
+              : '첫 발전소부터 등록하세요'
+          }
+          copy={
+            props.role === 'expert'
+              ? '관리자가 점검을 배정하면 이곳에 표시됩니다.'
+              : '발전소를 등록한 뒤 점검을 의뢰할 수 있습니다.'
+          }
+          action={props.role === 'expert' ? '배정 점검 확인' : '발전소 등록'}
+          onAction={() =>
+            props.setView(props.role === 'expert' ? 'inspections' : 'plants')
+          }
         />
       ) : (
         <div className="mt-6 grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
@@ -1687,6 +1938,48 @@ function DashboardView(props: SharedProps & { setView: (view: View) => void }) {
                       {inspection.inspection_code} ·{' '}
                       {inspection.purpose || '목적 미입력'}
                     </span>
+                    {props.role === 'client' && (
+                      <div
+                        className="mt-3 flex gap-1"
+                        aria-label="점검 진행 단계"
+                      >
+                        {[
+                          '접수',
+                          '자료 검토',
+                          '전문가 검토',
+                          '보고서 발행',
+                        ].map((label, index) => {
+                          const step = ['published', 'closed'].includes(
+                            inspection.status,
+                          )
+                            ? 3
+                            : ['expert_review', 'approval'].includes(
+                                  inspection.status,
+                                )
+                              ? 2
+                              : [
+                                    'uploading',
+                                    'quality_review',
+                                    'analysis',
+                                  ].includes(inspection.status)
+                                ? 1
+                                : 0;
+                          return (
+                            <span
+                              className={
+                                'rounded px-2 py-1 text-[10px] ' +
+                                (index <= step
+                                  ? 'bg-teal-100 text-teal-900'
+                                  : 'bg-slate-100 text-slate-400')
+                              }
+                              key={label}
+                            >
+                              {label}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                   <StatusPill>
                     {statusLabel(inspection.status, inspectionStatuses)}
@@ -1702,14 +1995,35 @@ function DashboardView(props: SharedProps & { setView: (view: View) => void }) {
           </section>
           <section className="rounded-2xl bg-[#123e42] p-6 text-white shadow-sm">
             <FileCheck2 className="size-7 text-teal-300" />
-            <h2 className="mt-5 text-xl font-bold">운영 시작 순서</h2>
+            <h2 className="mt-5 text-xl font-bold">
+              {props.role === 'expert'
+                ? '검토 진행 순서'
+                : props.role === 'client'
+                  ? '이용 순서'
+                  : '운영 시작 순서'}
+            </h2>
             <ol className="mt-5 space-y-4 text-sm text-slate-200">
-              {[
-                '발전소 정보 등록',
-                '점검 접수와 일정 지정',
-                '열화상 원본 업로드·상대 분석',
-                '전문가 판정 후 보고서·조치 연결',
-              ].map((item, index) => (
+              {(props.role === 'expert'
+                ? [
+                    '배정된 점검·촬영 조건 확인',
+                    '열화상 자료와 분석 후보 검토',
+                    '근거 사진·판정 작성',
+                    '보고서 검토 요청',
+                  ]
+                : props.role === 'client'
+                  ? [
+                      '내 발전소 정보 등록',
+                      '점검 의뢰와 진행 상황 확인',
+                      '발행된 진단 보고서 확인',
+                      '후속 조치·견적 비교와 업체 선택',
+                    ]
+                  : [
+                      '발전소 정보 등록',
+                      '점검 접수와 일정 지정',
+                      '열화상 원본 업로드·상대 분석',
+                      '전문가 판정 후 보고서·조치 연결',
+                    ]
+              ).map((item, index) => (
                 <li key={item} className="flex gap-3">
                   <span className="grid size-6 shrink-0 place-items-center rounded-full bg-white/10 text-xs font-bold text-teal-200">
                     {index + 1}
@@ -1903,161 +2217,173 @@ function PlantsView(
     <>
       <PageHeading
         eyebrow="ASSET REGISTRY"
-        title={props.requesterMode ? '내 발전소' : '발전소 관리'}
+        title={
+          props.requesterMode
+            ? '내 발전소'
+            : props.canWrite
+              ? '발전소 관리'
+              : '배정 발전소'
+        }
         copy={
           props.requesterMode
             ? '본인이 소유하거나 관리하는 발전소만 표시됩니다. 발전소를 등록하면 점검을 요청할 수 있습니다.'
             : '점검과 보고서가 연결될 기준 자산을 등록합니다. 용량은 kW, 시간은 발전소의 현지 시간대를 기준으로 표시합니다.'
         }
       />
-      <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
-        <form
-          onSubmit={save}
-          className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
-        >
-          <div className="flex items-center justify-between">
-            <h2 className="font-bold">
-              {editingId
-                ? '발전소 수정'
-                : props.requesterMode
-                  ? '내 발전소 등록'
-                  : '새 발전소'}
-            </h2>
-            {editingId && (
-              <button
-                type="button"
-                onClick={reset}
-                className="text-xs text-slate-500 underline"
-              >
-                취소
-              </button>
-            )}
-          </div>
-          {!props.canWrite && <ReadOnlyNote />}
-          <Field label="발전소명">
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={!props.canWrite}
-              required
-            />
-          </Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {!props.requesterMode && (
-              <Field label="관리 코드">
+      <div
+        className={`grid gap-5 ${props.canWrite ? 'xl:grid-cols-[380px_1fr]' : ''}`}
+      >
+        {props.canWrite && (
+          <form
+            onSubmit={save}
+            className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold">
+                {editingId
+                  ? '발전소 수정'
+                  : props.requesterMode
+                    ? '내 발전소 등록'
+                    : '새 발전소'}
+              </h2>
+              {editingId && (
+                <button
+                  type="button"
+                  onClick={reset}
+                  className="text-xs text-slate-500 underline"
+                >
+                  취소
+                </button>
+              )}
+            </div>
+            {!props.canWrite && <ReadOnlyNote />}
+            <Field label="발전소명">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={!props.canWrite}
+                required
+              />
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {!props.requesterMode && (
+                <Field label="관리 코드">
+                  <Input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    disabled={!props.canWrite}
+                    placeholder="PLANT-001"
+                  />
+                </Field>
+              )}
+              <Field label="설비용량(kW)">
                 <Input
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  value={capacity}
+                  onChange={(e) => setCapacity(e.target.value)}
                   disabled={!props.canWrite}
-                  placeholder="PLANT-001"
+                  required={props.requesterMode}
                 />
               </Field>
-            )}
-            <Field label="설비용량(kW)">
+            </div>
+            <Field label="주소">
               <Input
-                type="number"
-                min="0"
-                step="0.001"
-                value={capacity}
-                onChange={(e) => setCapacity(e.target.value)}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                disabled={!props.canWrite}
+              />
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="운영 형태">
+                <select
+                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={operatorType}
+                  onChange={(event) => setOperatorType(event.target.value)}
+                  disabled={!props.canWrite}
+                >
+                  <option value="개인">개인</option>
+                  <option value="법인">법인</option>
+                  <option value="협동조합">협동조합</option>
+                  <option value="공공">공공</option>
+                  <option value="기타">기타</option>
+                </select>
+              </Field>
+              <Field label="모듈 모델" hint="알면 입력">
+                <Input
+                  value={moduleModel}
+                  onChange={(event) => setModuleModel(event.target.value)}
+                  disabled={!props.canWrite}
+                />
+              </Field>
+            </div>
+            <Field label="인버터 모델" hint="알면 입력">
+              <Input
+                value={inverterModel}
+                onChange={(event) => setInverterModel(event.target.value)}
+                disabled={!props.canWrite}
+              />
+            </Field>
+            {!props.requesterMode && !editingId && (
+              <Field label="의뢰인 연결" hint="선택 사항">
+                <select
+                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={requesterId}
+                  onChange={(e) => setRequesterId(e.target.value)}
+                  disabled={!props.canWrite}
+                >
+                  <option value="">나중에 연결</option>
+                  {props.members
+                    .filter(
+                      (member) =>
+                        member.role === 'client' && member.status === 'active',
+                    )
+                    .map((member) => (
+                      <option key={member.user_id} value={member.user_id}>
+                        {props.profiles[member.user_id]?.display_name ||
+                          props.profiles[member.user_id]?.email ||
+                          member.user_id}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+            )}
+            <Field label="상업운전 시작일">
+              <Input
+                type="date"
+                value={commissionedOn}
+                onChange={(e) => setCommissionedOn(e.target.value)}
                 disabled={!props.canWrite}
                 required={props.requesterMode}
               />
             </Field>
-          </div>
-          <Field label="주소">
-            <Input
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              disabled={!props.canWrite}
-            />
-          </Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="운영 형태">
-              <select
-                className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
-                value={operatorType}
-                onChange={(event) => setOperatorType(event.target.value)}
-                disabled={!props.canWrite}
-              >
-                <option value="개인">개인</option>
-                <option value="법인">법인</option>
-                <option value="협동조합">협동조합</option>
-                <option value="공공">공공</option>
-                <option value="기타">기타</option>
-              </select>
-            </Field>
-            <Field label="모듈 모델" hint="알면 입력">
-              <Input
-                value={moduleModel}
-                onChange={(event) => setModuleModel(event.target.value)}
-                disabled={!props.canWrite}
+            <label className="flex items-start gap-3 rounded-xl bg-teal-50 p-3 text-sm leading-6 text-teal-950">
+              <input
+                type="checkbox"
+                className="mt-1 size-5 shrink-0 accent-teal-600"
+                checked={dataUseConsent}
+                onChange={(event) => setDataUseConsent(event.target.checked)}
+                disabled={
+                  !props.canWrite || Boolean(editingId && dataUseConsent)
+                }
+                required
               />
-            </Field>
-          </div>
-          <Field label="인버터 모델" hint="알면 입력">
-            <Input
-              value={inverterModel}
-              onChange={(event) => setInverterModel(event.target.value)}
-              disabled={!props.canWrite}
-            />
-          </Field>
-          {!props.requesterMode && !editingId && (
-            <Field label="의뢰인 연결" hint="선택 사항">
-              <select
-                className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                value={requesterId}
-                onChange={(e) => setRequesterId(e.target.value)}
-                disabled={!props.canWrite}
-              >
-                <option value="">나중에 연결</option>
-                {props.members
-                  .filter(
-                    (member) =>
-                      member.role === 'client' && member.status === 'active',
-                  )
-                  .map((member) => (
-                    <option key={member.user_id} value={member.user_id}>
-                      {props.profiles[member.user_id]?.display_name ||
-                        props.profiles[member.user_id]?.email ||
-                        member.user_id}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-          )}
-          <Field label="상업운전 시작일">
-            <Input
-              type="date"
-              value={commissionedOn}
-              onChange={(e) => setCommissionedOn(e.target.value)}
-              disabled={!props.canWrite}
-              required={props.requesterMode}
-            />
-          </Field>
-          <label className="flex items-start gap-3 rounded-xl bg-teal-50 p-3 text-sm leading-6 text-teal-950">
-            <input
-              type="checkbox"
-              className="mt-1 size-5 shrink-0 accent-teal-600"
-              checked={dataUseConsent}
-              onChange={(event) => setDataUseConsent(event.target.checked)}
-              disabled={!props.canWrite || Boolean(editingId && dataUseConsent)}
-              required
-            />
-            <span>
-              점검 접수와 보고서 작성을 위해 발전소 정보와 업로드 자료를
-              처리하는 데 동의합니다.
-            </span>
-          </label>
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={!props.canWrite || !dataUseConsent || busy}
-          >
-            {busy ? <Loader2 className="animate-spin" /> : <Plus />}
-            {editingId ? '변경 저장' : '발전소 등록'}
-          </Button>
-        </form>
+              <span>
+                점검 접수와 보고서 작성을 위해 발전소 정보와 업로드 자료를
+                처리하는 데 동의합니다.
+              </span>
+            </label>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={!props.canWrite || !dataUseConsent || busy}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <Plus />}
+              {editingId ? '변경 저장' : '발전소 등록'}
+            </Button>
+          </form>
+        )}
         <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
           <div className="border-b px-5 py-4">
             <h2 className="font-bold">등록 자산 {props.plants.length}곳</h2>
@@ -2228,114 +2554,124 @@ function InspectionsView(
     <>
       <PageHeading
         eyebrow="INSPECTION WORKFLOW"
-        title={props.requesterMode ? '내 점검 요청' : '점검 접수·진행 관리'}
+        title={
+          props.requesterMode
+            ? '내 점검 요청'
+            : props.expertMode
+              ? '배정 점검'
+              : '점검 접수·진행 관리'
+        }
         copy={
           props.requesterMode
             ? '내 발전소의 열화상 점검을 요청하고 진행 상태와 발행 결과를 확인합니다.'
             : '모든 일정은 한국 시간 기준입니다.'
         }
       />
-      <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
-        <form
-          onSubmit={create}
-          className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
-        >
-          <h2 className="font-bold">
-            {props.requesterMode ? '새 점검 요청' : '새 점검 접수'}
-          </h2>
-          {!props.canCreate && <ReadOnlyNote />}
-          {props.plants.length === 0 && (
-            <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">
-              먼저 발전소를 등록해야 합니다.
-            </p>
-          )}
-          <Field label="대상 발전소">
-            <select
-              className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-              value={effectivePlantId}
-              onChange={(e) => setPlantId(e.target.value)}
-              disabled={!props.canCreate}
-            >
-              {props.plants.map((plant) => (
-                <option key={plant.id} value={plant.id}>
-                  {plant.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {!props.requesterMode && (
-            <Field label="점검 번호">
-              <Input
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
+      <div
+        className={`grid gap-5 ${props.canCreate ? 'xl:grid-cols-[380px_1fr]' : ''}`}
+      >
+        {props.canCreate && (
+          <form
+            onSubmit={create}
+            className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
+          >
+            <h2 className="font-bold">
+              {props.requesterMode ? '새 점검 요청' : '새 점검 접수'}
+            </h2>
+            {!props.canCreate && <ReadOnlyNote />}
+            {props.plants.length === 0 && (
+              <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-800">
+                먼저 발전소를 등록해야 합니다.
+              </p>
+            )}
+            <Field label="대상 발전소">
+              <select
+                className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                value={effectivePlantId}
+                onChange={(e) => setPlantId(e.target.value)}
                 disabled={!props.canCreate}
-                required
+              >
+                {props.plants.map((plant) => (
+                  <option key={plant.id} value={plant.id}>
+                    {plant.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {!props.requesterMode && (
+              <Field label="점검 번호">
+                <Input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  disabled={!props.canCreate}
+                  required
+                />
+              </Field>
+            )}
+            <Field label="점검 목적">
+              <Input
+                value={purpose}
+                onChange={(e) => setPurpose(e.target.value)}
+                disabled={!props.canCreate}
               />
             </Field>
-          )}
-          <Field label="점검 목적">
-            <Input
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value)}
-              disabled={!props.canCreate}
-            />
-          </Field>
-          {!props.requesterMode && (
-            <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="예정 일시">
-                  <Input
-                    type="datetime-local"
-                    value={scheduledAt}
-                    onChange={(e) => setScheduledAt(e.target.value)}
+            {!props.requesterMode && (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="예정 일시">
+                    <Input
+                      type="datetime-local"
+                      value={scheduledAt}
+                      onChange={(e) => setScheduledAt(e.target.value)}
+                      disabled={!props.canCreate}
+                    />
+                  </Field>
+                  <Field label="완료 목표">
+                    <Input
+                      type="datetime-local"
+                      value={dueAt}
+                      onChange={(e) => setDueAt(e.target.value)}
+                      disabled={!props.canCreate}
+                    />
+                  </Field>
+                </div>
+                <Field label="담당 전문가">
+                  <select
+                    className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                    value={expertId}
+                    onChange={(e) => setExpertId(e.target.value)}
                     disabled={!props.canCreate}
-                  />
+                  >
+                    <option value="">미배정</option>
+                    {activeExperts.map((member) => (
+                      <option key={member.user_id} value={member.user_id}>
+                        {props.profiles[member.user_id]?.display_name ||
+                          props.profiles[member.user_id]?.email ||
+                          member.user_id}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
-                <Field label="완료 목표">
-                  <Input
-                    type="datetime-local"
-                    value={dueAt}
-                    onChange={(e) => setDueAt(e.target.value)}
-                    disabled={!props.canCreate}
-                  />
-                </Field>
-              </div>
-              <Field label="담당 전문가">
-                <select
-                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                  value={expertId}
-                  onChange={(e) => setExpertId(e.target.value)}
-                  disabled={!props.canCreate}
-                >
-                  <option value="">미배정</option>
-                  {activeExperts.map((member) => (
-                    <option key={member.user_id} value={member.user_id}>
-                      {props.profiles[member.user_id]?.display_name ||
-                        props.profiles[member.user_id]?.email ||
-                        member.user_id}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </>
-          )}
-          <Field label="현장 메모">
-            <Textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              disabled={!props.canCreate}
-              rows={3}
-            />
-          </Field>
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={!props.canCreate || !effectivePlantId || busy}
-          >
-            {busy ? <Loader2 className="animate-spin" /> : <Plus />}
-            {props.requesterMode ? '점검 요청' : '점검 접수'}
-          </Button>
-        </form>
+              </>
+            )}
+            <Field label="현장 메모">
+              <Textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                disabled={!props.canCreate}
+                rows={3}
+              />
+            </Field>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={!props.canCreate || !effectivePlantId || busy}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <Plus />}
+              {props.requesterMode ? '점검 요청' : '점검 접수'}
+            </Button>
+          </form>
+        )}
         <section className="space-y-3">
           {props.inspections.map((inspection) => (
             <article
@@ -3247,66 +3583,70 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
         title="유지보수 요청·조치 이력"
         copy="판정 결과에서 후속 조치를 만들고, 배정·견적·일정·완료 상태를 한 흐름으로 남깁니다."
       />
-      <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
-        <form
-          onSubmit={create}
-          className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
-        >
-          <h2 className="font-bold">새 조치 요청</h2>
-          {!props.canWrite && <ReadOnlyNote />}
-          <Field label="관련 점검">
-            <select
-              className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-              value={effectiveInspectionId}
-              onChange={(e) => setInspectionId(e.target.value)}
-              disabled={!props.canWrite}
-            >
-              {props.inspections.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {inspectionLabel(item.id)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="작업명">
-            <Input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              disabled={!props.canWrite}
-              required
-            />
-          </Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="우선순위">
+      <div
+        className={`grid gap-5 ${props.canWrite ? 'xl:grid-cols-[380px_1fr]' : ''}`}
+      >
+        {props.canWrite && (
+          <form
+            onSubmit={create}
+            className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
+          >
+            <h2 className="font-bold">새 조치 요청</h2>
+            {!props.canWrite && <ReadOnlyNote />}
+            <Field label="관련 점검">
               <select
                 className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
+                value={effectiveInspectionId}
+                onChange={(e) => setInspectionId(e.target.value)}
                 disabled={!props.canWrite}
               >
-                <option value="low">낮음</option>
-                <option value="normal">보통</option>
-                <option value="high">높음</option>
-                <option value="urgent">긴급</option>
+                {props.inspections.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {inspectionLabel(item.id)}
+                  </option>
+                ))}
               </select>
             </Field>
-            <Field label="업체">
+            <Field label="작업명">
               <Input
-                value={vendor}
-                onChange={(e) => setVendor(e.target.value)}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
                 disabled={!props.canWrite}
+                required
               />
             </Field>
-          </div>
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={!props.canWrite || !effectiveInspectionId || busy}
-          >
-            {busy ? <Loader2 className="animate-spin" /> : <Plus />}조치 요청
-            등록
-          </Button>
-        </form>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="우선순위">
+                <select
+                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                  disabled={!props.canWrite}
+                >
+                  <option value="low">낮음</option>
+                  <option value="normal">보통</option>
+                  <option value="high">높음</option>
+                  <option value="urgent">긴급</option>
+                </select>
+              </Field>
+              <Field label="업체">
+                <Input
+                  value={vendor}
+                  onChange={(e) => setVendor(e.target.value)}
+                  disabled={!props.canWrite}
+                />
+              </Field>
+            </div>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={!props.canWrite || !effectiveInspectionId || busy}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <Plus />}조치 요청
+              등록
+            </Button>
+          </form>
+        )}
         <section className="space-y-3">
           {props.maintenance.map((item) => (
             <article

@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'SolarScope | 태양광 자산진단 운영센터',
+  title: 'SolarScope | 태양광 자산진단 플랫폼',
   description:
     '검사 접수부터 열화상 원본, 전문가 판정, 보고서와 유지보수까지 연결하는 태양광 자산진단 운영센터',
   icons: { icon: '/favicon.svg' },
