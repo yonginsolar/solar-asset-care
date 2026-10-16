@@ -89,6 +89,42 @@ async function required(p) {
   if (r.error) throw new Error(r.error.message);
   return r.data;
 }
+async function guardedReport(client, args) {
+  const row = await client
+    .from('reports')
+    .select('action_revision')
+    .eq('id', args.p_report_id)
+    .maybeSingle();
+  const snap = await client
+    .from('report_snapshots')
+    .select('sha256')
+    .eq('report_id', args.p_report_id)
+    .maybeSingle();
+  return client.rpc('transition_report_status', {
+    ...args,
+    p_expected_revision: row.data?.action_revision ?? null,
+    p_expected_snapshot_sha256: snap.data?.sha256 ?? null,
+  });
+}
+async function guardedQuote(client, args) {
+  const row = await client
+    .from('partner_quotes')
+    .select('action_revision,quote_request_id')
+    .eq('id', args.p_quote_id)
+    .maybeSingle();
+  const request = row.data
+    ? await client
+        .from('quote_requests')
+        .select('action_revision')
+        .eq('id', row.data.quote_request_id)
+        .maybeSingle()
+    : null;
+  return client.rpc('select_partner_quote', {
+    ...args,
+    p_expected_quote_revision: row.data?.action_revision ?? null,
+    p_expected_request_revision: request?.data?.action_revision ?? null,
+  });
+}
 async function user() {
   const password = uiPassword ?? `T-${randomUUID()}-9a!`;
   const email = `acceptance-${randomUUID()}@example.invalid`;
@@ -215,6 +251,70 @@ try {
       })
       .select('*')
       .single(),
+  );
+  const creation = {
+    p_organization_id: organization.id,
+    p_plant_id: randomUUID(),
+    p_expected_updated_at: null,
+    p_details: { name: '가상 원자적 등록', data_use_consent: true },
+    p_requester_user_id: client.id,
+  };
+  const atomicPlant = await required(
+    owner.client.rpc('save_admin_plant', creation),
+  );
+  const replayPlant = await required(
+    owner.client.rpc('save_admin_plant', creation),
+  );
+  check(
+    atomicPlant.id === replayPlant.id,
+    'real-Auth plant create replay returns one stable registration',
+  );
+  check(
+    Boolean(
+      (
+        await client.client
+          .from('plants')
+          .select('id')
+          .eq('id', atomicPlant.id)
+          .maybeSingle()
+      ).data,
+    ),
+    'atomic plant registration grants only the selected requester link',
+  );
+  for (const actor of [expert, client, otherOwner])
+    check(
+      Boolean((await actor.client.rpc('save_admin_plant', creation)).error),
+      'expert/requester/foreign owner cannot use administrator plant write',
+    );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('save_admin_plant', {
+          ...creation,
+          p_expected_updated_at: '2000-01-01T00:00:00Z',
+          p_details: { name: '오래된 수정' },
+        })
+      ).error,
+    ),
+    'real-Auth stale admin plant edit is rejected',
+  );
+  const invalidCreation = {
+    ...creation,
+    p_plant_id: randomUUID(),
+    p_requester_user_id: otherOwner.id,
+  };
+  check(
+    Boolean(
+      (await owner.client.rpc('save_admin_plant', invalidCreation)).error,
+    ) &&
+      !(
+        await owner.client
+          .from('plants')
+          .select('id')
+          .eq('id', invalidCreation.p_plant_id)
+          .maybeSingle()
+      ).data,
+    'failed requester link leaves no partial plant in the operating database',
   );
   await required(
     admin
@@ -624,7 +724,7 @@ try {
         p_amount_krw: (index + 1) * 1000000,
         p_estimated_days: (index + 1) * 3,
         p_proposed_start_on: '2026-09-15',
-        p_valid_until: '2026-09-30',
+        p_valid_until: '2099-09-30',
         p_scope: `가상 작업 ${index + 1}`,
         p_conditions: '합성 수용시험 조건',
         p_commission_rate: 7.5,
@@ -662,7 +762,7 @@ try {
       p_amount_krw: 3000000,
       p_estimated_days: 9,
       p_proposed_start_on: '2026-09-20',
-      p_valid_until: '2026-10-10',
+      p_valid_until: '2099-10-10',
       p_scope: '가상 작업 3',
       p_conditions: '합성 수용시험 조건',
       p_commission_rate: 7.5,
@@ -671,22 +771,88 @@ try {
   check(
     Boolean(
       (
-        await otherClient.client.rpc('select_partner_quote', {
+        await guardedQuote(otherClient.client, {
           p_quote_id: requestedQuotes[1].id,
         })
       ).error,
     ) &&
       Boolean(
         (
-          await expert.client.rpc('select_partner_quote', {
+          await guardedQuote(expert.client, {
             p_quote_id: requestedQuotes[1].id,
           })
         ).error,
       ),
     'unlinked requester and expert cannot select a quote',
   );
+  const oldQuote = await required(
+    client.client
+      .from('partner_quotes')
+      .select('*')
+      .eq('id', requestedQuotes[0].id)
+      .single(),
+  );
+  const oldRequest = await required(
+    client.client
+      .from('quote_requests')
+      .select('*')
+      .eq('id', quoteRequest.id)
+      .single(),
+  );
   await required(
-    client.client.rpc('select_partner_quote', {
+    owner.client.rpc('record_partner_quote_response', {
+      p_quote_id: oldQuote.id,
+      p_amount_krw: 1100000,
+      p_estimated_days: 4,
+      p_proposed_start_on: null,
+      p_valid_until: '2099-01-01',
+      p_scope: '바뀐 작업 범위',
+      p_conditions: '바뀐 조건',
+      p_commission_rate: 7.5,
+    }),
+  );
+  check(
+    Boolean(
+      (
+        await client.client.rpc('select_partner_quote', {
+          p_quote_id: oldQuote.id,
+          p_expected_quote_revision: oldQuote.action_revision,
+          p_expected_request_revision: oldRequest.action_revision,
+        })
+      ).error,
+    ),
+    'real customer cannot select a quote changed after comparison',
+  );
+  check(
+    Boolean(
+      (
+        await client.client.rpc('select_partner_quote', {
+          p_quote_id: oldQuote.id,
+        })
+      ).error,
+    ),
+    'legacy quote call without a read identity is denied',
+  );
+  await required(
+    owner.client.rpc('record_partner_quote_response', {
+      p_quote_id: oldQuote.id,
+      p_amount_krw: 1100000,
+      p_estimated_days: 4,
+      p_proposed_start_on: null,
+      p_valid_until: '2020-01-01',
+      p_scope: '만료 범위',
+      p_conditions: '만료 조건',
+      p_commission_rate: 7.5,
+    }),
+  );
+  check(
+    Boolean(
+      (await guardedQuote(client.client, { p_quote_id: oldQuote.id })).error,
+    ),
+    'real customer cannot select an expired quote even with a fresh revision',
+  );
+  await required(
+    guardedQuote(client.client, {
       p_quote_id: requestedQuotes[1].id,
     }),
   );
@@ -709,7 +875,11 @@ try {
       selectedRequest.selected_quote_id === requestedQuotes[1].id &&
       selectedQuotes.filter((quote) => quote.status === 'selected').length ===
         1 &&
-      selectedQuotes[0].commission_amount_krw === 75000,
+      selectedQuotes.every(
+        (q) =>
+          q.commission_amount_krw ===
+          Math.round((q.amount_krw * q.commission_rate) / 100),
+      ),
     'three responses become selectable and selection preserves commission math',
   );
   const png = Buffer.from(
@@ -892,6 +1062,73 @@ try {
   );
   const downloaded = await required(
     expert.client.storage.from('inspection-originals').download(path),
+  );
+  const run = await required(
+    expert.client.rpc('start_relative_analysis', {
+      p_inspection_file_id: file.id,
+      p_normalized_pixels: 64,
+    }),
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('start_relative_analysis', {
+          p_inspection_file_id: file.id,
+          p_normalized_pixels: 64,
+        })
+      ).error,
+    ),
+    'real-Auth concurrent analysis of the same original is rejected',
+  );
+  check(
+    Boolean(
+      (
+        await expert.client.rpc('complete_relative_analysis', {
+          p_analysis_run_id: run.id,
+          p_result_summary: null,
+          p_regions: null,
+        })
+      ).error,
+    ),
+    'real-Auth SQL NULL completion cannot report a successful empty analysis',
+  );
+  for (const actor of [client, otherOwner])
+    check(
+      Boolean(
+        (
+          await actor.client.rpc('resolve_relative_analysis', {
+            p_analysis_run_id: run.id,
+            p_expected_status: 'running',
+            p_action: 'cancel',
+            p_reason: '권한 차단',
+          })
+        ).error,
+      ),
+      'customer/foreign owner cannot resolve staff analysis',
+    );
+  await required(
+    expert.client.rpc('resolve_relative_analysis', {
+      p_analysis_run_id: run.id,
+      p_expected_status: 'running',
+      p_action: 'cancel',
+      p_reason: '격리 분석 중단',
+    }),
+  );
+  const ackArgs = {
+    p_analysis_run_id: run.id,
+    p_expected_status: 'cancelled',
+    p_action: 'manual_review',
+    p_reason: '사진으로 직접 확인하는 격리 시험',
+  };
+  const ack = await required(
+    expert.client.rpc('resolve_relative_analysis', ackArgs),
+  );
+  const repeatedAck = await required(
+    expert.client.rpc('resolve_relative_analysis', ackArgs),
+  );
+  check(
+    Boolean(ack.reviewed_at) && ack.reviewed_at === repeatedAck.reviewed_at,
+    'manual review acknowledgment is explicit and preserves original confirmation on replay',
   );
   check(
     digest(Buffer.from(await downloaded.arrayBuffer())) === digest(png),
@@ -1126,7 +1363,7 @@ try {
   reportId = photoReport.id;
   createdReportIds.push(reportId);
   await required(
-    expert.client.rpc('transition_report_status', {
+    guardedReport(expert.client, {
       p_report_id: reportId,
       p_next_status: 'review',
     }),
@@ -1138,6 +1375,50 @@ try {
       .eq('report_id', reportId)
       .single(),
   );
+  const oldReview = await required(
+    owner.client
+      .from('reports')
+      .select('action_revision')
+      .eq('id', reportId)
+      .single(),
+  );
+  await required(
+    guardedReport(owner.client, {
+      p_report_id: reportId,
+      p_next_status: 'draft',
+      p_reason: '수정판 대조 시험',
+    }),
+  );
+  await required(
+    guardedReport(expert.client, {
+      p_report_id: reportId,
+      p_next_status: 'review',
+    }),
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('transition_report_status', {
+          p_report_id: reportId,
+          p_next_status: 'approved',
+          p_expected_revision: oldReview.action_revision,
+          p_expected_snapshot_sha256: photoSnapshot.sha256,
+        })
+      ).error,
+    ),
+    'real administrator stale review approval is rejected after a new review cycle',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('transition_report_status', {
+          p_report_id: reportId,
+          p_next_status: 'approved',
+        })
+      ).error,
+    ),
+    'legacy approval without a read revision cannot bypass the review guard',
+  );
   check(
     photoSnapshot.content.schemaVersion === 2 &&
       photoSnapshot.content.assessment === null &&
@@ -1145,7 +1426,7 @@ try {
     'photo report freezes without invented measurement or financial data',
   );
   await required(
-    owner.client.rpc('transition_report_status', {
+    guardedReport(owner.client, {
       p_report_id: reportId,
       p_next_status: 'approved',
     }),
@@ -1164,7 +1445,7 @@ try {
     'photo-only PDF generated and archived on deployed server',
   );
   await required(
-    owner.client.rpc('transition_report_status', {
+    guardedReport(owner.client, {
       p_report_id: reportId,
       p_next_status: 'published',
     }),
@@ -1296,7 +1577,7 @@ try {
   reportId = report.id;
   createdReportIds.push(reportId);
   await required(
-    expert.client.rpc('transition_report_status', {
+    guardedReport(expert.client, {
       p_report_id: reportId,
       p_next_status: 'review',
     }),
@@ -1304,7 +1585,7 @@ try {
   check(
     Boolean(
       (
-        await expert.client.rpc('transition_report_status', {
+        await guardedReport(expert.client, {
           p_report_id: reportId,
           p_next_status: 'approved',
         })
@@ -1313,7 +1594,7 @@ try {
     'expert cannot approve',
   );
   await required(
-    owner.client.rpc('transition_report_status', {
+    guardedReport(owner.client, {
       p_report_id: reportId,
       p_next_status: 'approved',
     }),
@@ -1358,7 +1639,7 @@ try {
     'unissued PDF direct storage access denied',
   );
   await required(
-    owner.client.rpc('transition_report_status', {
+    guardedReport(owner.client, {
       p_report_id: reportId,
       p_next_status: 'published',
     }),
@@ -1955,9 +2236,7 @@ try {
           p_commission_rate: 0,
         }),
       );
-    await required(
-      client.client.rpc('select_partner_quote', { p_quote_id: uiQuotes[0].id }),
-    );
+    await required(guardedQuote(client.client, { p_quote_id: uiQuotes[0].id }));
     await required(
       owner.client
         .from('maintenance_requests')
@@ -2027,7 +2306,7 @@ try {
         });
   }
   await required(
-    owner.client.rpc('transition_report_status', {
+    guardedReport(owner.client, {
       p_report_id: reportId,
       p_next_status: 'withdrawn',
       p_reason: '수용시험 종료',

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { checkConcurrency } from './local-workflow-concurrency.mjs';
 const root = resolve(import.meta.dirname, '../..');
 const work = mkdtempSync(join(tmpdir(), 'solar-workflow-'));
 const bin = '/opt/homebrew/opt/postgresql@17/bin';
@@ -93,7 +94,12 @@ try {
   sql(
     progressive.replace(
       'rollback;',
-      workflow + '\n' + schedule + '\nrollback;',
+      readFileSync(join(root, 'supabase/tests/guarded_actions.sql'), 'utf8') +
+        '\n' +
+        workflow +
+        '\n' +
+        schedule +
+        '\nrollback;',
     ),
   );
   checks++;
@@ -104,8 +110,10 @@ try {
     ),
   );
   checks++;
+  await checkConcurrency({ bin, env, sql });
+  checks++;
   console.log(
-    'PASS all migrations + service access + progressive diagnosis + workflow integrity + optimistic updates SQL assertions',
+    'PASS all migrations + service access + progressive diagnosis + workflow integrity + optimistic updates + guarded actions SQL assertions',
   );
   console.log('PASS isolated suites: ' + checks + '; no production writes');
 } catch (e) {

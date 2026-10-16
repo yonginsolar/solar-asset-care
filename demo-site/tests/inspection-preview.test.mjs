@@ -4,9 +4,14 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 const source = ts.transpileModule(
   readFileSync(
-    new URL('../lib/inspection-preview.ts', import.meta.url),
+    new URL('../lib/original-integrity.ts', import.meta.url),
     'utf8',
-  ),
+  ) +
+    '\n' +
+    readFileSync(
+      new URL('../lib/inspection-preview.ts', import.meta.url),
+      'utf8',
+    ).replace("import { verifyOriginal } from './original-integrity';", ''),
   {
     compilerOptions: {
       module: ts.ModuleKind.ESNext,

@@ -9,7 +9,7 @@ insert into storage.objects(bucket_id,name,metadata)
  select 'reports',organization_id::text||'/'||inspection_id::text||'/'||id::text||'/'||:'frozen_hash'||'.pdf','{"size":100,"mimetype":"application/pdf"}'::jsonb from public.reports where id=:'report';
 set local role authenticated;
 select public.archive_report_pdf(:'report',:'frozen_hash',repeat('d',64),100,'text-assessment-v1');
-select public.transition_report_status(:'report','published',null);
+select public.qa_transition_report(:'report','published',null);
 select set_config('request.jwt.claim.sub',:'expert',true);
 insert into public.findings(organization_id,inspection_id,source,kind,disposition,expert_note,reviewed_by,reviewed_at)
  values(:'org',:'inspection','expert_manual','hotspot','accepted','UNPUBLISHED-NEW-FINDING',:'expert',now()) returning id as new_finding \gset
@@ -21,9 +21,9 @@ select set_config('request.jwt.claim.sub',:'owner',true);
 set local role authenticated;
 select id as report2 from public.create_report_draft(:'inspection','개정 보고서 시험') \gset
 select public.qa_assert((select status='expert_review' from public.inspections where id=:'inspection'),'new revision updates work status but keeps old issue available');
-select public.transition_report_status(:'report2','review',null);
-select public.transition_report_status(:'report2','approved',null);
-select public.qa_denied(format('select public.transition_report_status(%L,%L,null)',:'report2','published'),'PDF','failed revision publication still requires PDF');
+select public.qa_transition_report(:'report2','review',null);
+select public.qa_transition_report(:'report2','approved',null);
+select public.qa_denied(format('select public.qa_transition_report(%L,%L,null)',:'report2','published'),'PDF','failed revision publication still requires PDF');
 select public.qa_assert((select status='published' from public.reports where id=:'report'),'failed replacement retains current published report');
 reset role;
 select sha256 as hash2 from public.report_snapshots where report_id=:'report2' \gset
@@ -31,7 +31,7 @@ insert into storage.objects(bucket_id,name,metadata)
  select 'reports',organization_id::text||'/'||inspection_id::text||'/'||id::text||'/'||:'hash2'||'.pdf','{"size":100,"mimetype":"application/pdf"}'::jsonb from public.reports where id=:'report2';
 set local role authenticated;
 select public.archive_report_pdf(:'report2',:'hash2',repeat('e',64),100,'text-assessment-v1');
-select public.transition_report_status(:'report2','published',null);
+select public.qa_transition_report(:'report2','published',null);
 select public.qa_assert((select count(*)=1 from public.reports where inspection_id=:'inspection' and status='published'),'atomic revision leaves exactly one current issue');
 select public.qa_assert((select status='withdrawn' from public.reports where id=:'report'),'previous issue superseded without deletion');
 reset role;
@@ -64,20 +64,20 @@ select id as q2 from public.partner_quotes where quote_request_id=:'request' and
 select public.record_partner_quote_response(:'q1',100000,1,null,null,'작업','',0);
 select public.record_partner_quote_response(:'q2',200000,2,null,null,'작업','',0);
 select set_config('request.jwt.claim.sub',:'client',true);
-select public.qa_denied(format('select public.select_partner_quote(%L)',:'q1'),'권한','other authorized plant customer cannot choose designated contacts quote');
+select public.qa_denied(format('select public.qa_select_quote(%L)',:'q1'),'권한','other authorized plant customer cannot choose designated contacts quote');
 select set_config('request.jwt.claim.sub',:'other',true);
-select public.select_partner_quote(:'q1');
+select public.qa_select_quote(:'q1');
 select public.qa_assert((select selected_quote_id=:'q1' and vendor_name='시험 업체1' and status='assigned' from public.maintenance_requests where id=:'maintenance'),'selected quotation populates linked maintenance vendor');
 select set_config('request.jwt.claim.sub',:'owner',true);
 select public.qa_denied(format('update public.maintenance_requests set vendor_name=%L where id=%L','다른 업체',:'maintenance'),'일치','cannot overwrite linked selected vendor with unrelated name');
 update public.maintenance_requests set status='completed' where id=:'maintenance';
 select public.qa_assert((select completed_at is not null from public.maintenance_requests where id=:'maintenance'),'completion uses server timestamp');
-select public.qa_denied(format('select public.select_partner_quote(%L)',:'q2'),'작업 중','completed work blocks vendor reselection atomically');
+select public.qa_denied(format('select public.qa_select_quote(%L)',:'q2'),'작업 중','completed work blocks vendor reselection atomically');
 select public.qa_assert((select selected_quote_id=:'q1' from public.quote_requests where id=:'request'),'failed reselection retains old quote');
 update public.maintenance_requests set status='in_progress' where id=:'maintenance';
 select public.qa_assert((select completed_at is null from public.maintenance_requests where id=:'maintenance'),'reopening maintenance clears stale completion timestamp');
 select public.service_admin_action(:'org','customers.unlink_contact',jsonb_build_object('customer_id',:'customer','revision',5,'user_id',:'other'));
 select set_config('request.jwt.claim.sub',:'other',true);
 select public.qa_assert((select count(*)=0 from public.quote_requests where id=:'request'),'revoked shared contact immediately loses quotation access');
-select public.qa_denied(format('select public.select_partner_quote(%L)',:'q1'),'권한','revoked contact cannot select using old session');
+select public.qa_denied(format('select public.qa_select_quote(%L)',:'q1'),'권한','revoked contact cannot select using old session');
 reset role;

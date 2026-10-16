@@ -10,91 +10,10 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: '14.5';
+    PostgrestVersion: '14.17';
   };
   public: {
     Tables: {
-      recycling_certificates: {
-        Row: {
-          bytes: number;
-          certificate_number: string;
-          created_at: string;
-          created_by: string;
-          id: string;
-          issued_on: string;
-          issuer: string;
-          mime_type: string;
-          organization_id: string;
-          panel_count: number | null;
-          plant_id: string;
-          review_reason: string;
-          reviewed_at: string | null;
-          reviewed_by: string | null;
-          revision: number;
-          sha256: string;
-          status: string;
-          storage_path: string;
-          title: string;
-        };
-        Insert: {
-          bytes: number;
-          certificate_number?: string;
-          created_at?: string;
-          created_by: string;
-          id: string;
-          issued_on: string;
-          issuer: string;
-          mime_type: string;
-          organization_id: string;
-          panel_count?: number | null;
-          plant_id: string;
-          review_reason?: string;
-          reviewed_at?: string | null;
-          reviewed_by?: string | null;
-          revision?: number;
-          sha256: string;
-          status?: string;
-          storage_path: string;
-          title: string;
-        };
-        Update: {
-          bytes?: number;
-          certificate_number?: string;
-          created_at?: string;
-          created_by?: string;
-          id?: string;
-          issued_on?: string;
-          issuer?: string;
-          mime_type?: string;
-          organization_id?: string;
-          panel_count?: number | null;
-          plant_id?: string;
-          review_reason?: string;
-          reviewed_at?: string | null;
-          reviewed_by?: string | null;
-          revision?: number;
-          sha256?: string;
-          status?: string;
-          storage_path?: string;
-          title?: string;
-        };
-        Relationships: [
-          {
-            foreignKeyName: 'recycling_certificates_organization_id_fkey';
-            columns: ['organization_id'];
-            isOneToOne: false;
-            referencedRelation: 'organizations';
-            referencedColumns: ['id'];
-          },
-          {
-            foreignKeyName: 'recycling_certificates_plant_id_fkey';
-            columns: ['plant_id'];
-            isOneToOne: false;
-            referencedRelation: 'plants';
-            referencedColumns: ['id'];
-          },
-        ];
-      };
       analysis_runs: {
         Row: {
           algorithm_key: string;
@@ -109,6 +28,9 @@ export type Database = {
           requested_at: string;
           requested_by: string | null;
           result_summary: Json | null;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
           started_at: string | null;
           status: string;
         };
@@ -125,6 +47,9 @@ export type Database = {
           requested_at?: string;
           requested_by?: string | null;
           result_summary?: Json | null;
+          review_note?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
           started_at?: string | null;
           status?: string;
         };
@@ -141,6 +66,9 @@ export type Database = {
           requested_at?: string;
           requested_by?: string | null;
           result_summary?: Json | null;
+          review_note?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
           started_at?: string | null;
           status?: string;
         };
@@ -495,7 +423,6 @@ export type Database = {
       };
       inspections: {
         Row: {
-          workflow_reason: string | null;
           assigned_expert_user_id: string | null;
           assigned_field_user_id: string | null;
           capture_timezone: string;
@@ -512,9 +439,9 @@ export type Database = {
           scheduled_at: string | null;
           status: string;
           updated_at: string;
+          workflow_reason: string | null;
         };
         Insert: {
-          workflow_reason?: string | null;
           assigned_expert_user_id?: string | null;
           assigned_field_user_id?: string | null;
           capture_timezone?: string;
@@ -531,9 +458,9 @@ export type Database = {
           scheduled_at?: string | null;
           status?: string;
           updated_at?: string;
+          workflow_reason?: string | null;
         };
         Update: {
-          workflow_reason?: string | null;
           assigned_expert_user_id?: string | null;
           assigned_field_user_id?: string | null;
           capture_timezone?: string;
@@ -550,6 +477,7 @@ export type Database = {
           scheduled_at?: string | null;
           status?: string;
           updated_at?: string;
+          workflow_reason?: string | null;
         };
         Relationships: [
           {
@@ -570,7 +498,6 @@ export type Database = {
       };
       maintenance_requests: {
         Row: {
-          selected_quote_id: string | null;
           assignee_user_id: string | null;
           completed_at: string | null;
           completion_note: string | null;
@@ -582,13 +509,13 @@ export type Database = {
           organization_id: string;
           priority: string;
           scheduled_at: string | null;
+          selected_quote_id: string | null;
           status: string;
           title: string;
           updated_at: string;
           vendor_name: string | null;
         };
         Insert: {
-          selected_quote_id?: string | null;
           assignee_user_id?: string | null;
           completed_at?: string | null;
           completion_note?: string | null;
@@ -600,13 +527,13 @@ export type Database = {
           organization_id: string;
           priority?: string;
           scheduled_at?: string | null;
+          selected_quote_id?: string | null;
           status?: string;
           title: string;
           updated_at?: string;
           vendor_name?: string | null;
         };
         Update: {
-          selected_quote_id?: string | null;
           assignee_user_id?: string | null;
           completed_at?: string | null;
           completion_note?: string | null;
@@ -618,6 +545,7 @@ export type Database = {
           organization_id?: string;
           priority?: string;
           scheduled_at?: string | null;
+          selected_quote_id?: string | null;
           status?: string;
           title?: string;
           updated_at?: string;
@@ -643,6 +571,13 @@ export type Database = {
             columns: ['organization_id'];
             isOneToOne: false;
             referencedRelation: 'organizations';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'maintenance_requests_selected_quote_id_fkey';
+            columns: ['selected_quote_id'];
+            isOneToOne: false;
+            referencedRelation: 'partner_quotes';
             referencedColumns: ['id'];
           },
         ];
@@ -761,6 +696,7 @@ export type Database = {
       };
       partner_quotes: {
         Row: {
+          action_revision: number;
           amount_krw: number | null;
           commission_amount_krw: number | null;
           commission_rate: number;
@@ -783,6 +719,7 @@ export type Database = {
           valid_until: string | null;
         };
         Insert: {
+          action_revision?: number;
           amount_krw?: number | null;
           commission_amount_krw?: number | null;
           commission_rate?: number;
@@ -805,6 +742,7 @@ export type Database = {
           valid_until?: string | null;
         };
         Update: {
+          action_revision?: number;
           amount_krw?: number | null;
           commission_amount_krw?: number | null;
           commission_rate?: number;
@@ -1082,6 +1020,7 @@ export type Database = {
       };
       quote_requests: {
         Row: {
+          action_revision: number;
           created_at: string;
           id: string;
           inspection_id: string | null;
@@ -1100,6 +1039,7 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
+          action_revision?: number;
           created_at?: string;
           id?: string;
           inspection_id?: string | null;
@@ -1118,6 +1058,7 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          action_revision?: number;
           created_at?: string;
           id?: string;
           inspection_id?: string | null;
@@ -1169,6 +1110,87 @@ export type Database = {
             columns: ['selected_quote_id'];
             isOneToOne: false;
             referencedRelation: 'partner_quotes';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      recycling_certificates: {
+        Row: {
+          bytes: number;
+          certificate_number: string;
+          created_at: string;
+          created_by: string;
+          id: string;
+          issued_on: string;
+          issuer: string;
+          mime_type: string;
+          organization_id: string;
+          panel_count: number | null;
+          plant_id: string;
+          review_reason: string;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          revision: number;
+          sha256: string;
+          status: string;
+          storage_path: string;
+          title: string;
+        };
+        Insert: {
+          bytes: number;
+          certificate_number?: string;
+          created_at?: string;
+          created_by: string;
+          id: string;
+          issued_on: string;
+          issuer: string;
+          mime_type: string;
+          organization_id: string;
+          panel_count?: number | null;
+          plant_id: string;
+          review_reason?: string;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          revision?: number;
+          sha256: string;
+          status?: string;
+          storage_path: string;
+          title: string;
+        };
+        Update: {
+          bytes?: number;
+          certificate_number?: string;
+          created_at?: string;
+          created_by?: string;
+          id?: string;
+          issued_on?: string;
+          issuer?: string;
+          mime_type?: string;
+          organization_id?: string;
+          panel_count?: number | null;
+          plant_id?: string;
+          review_reason?: string;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          revision?: number;
+          sha256?: string;
+          status?: string;
+          storage_path?: string;
+          title?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'recycling_certificates_organization_id_fkey';
+            columns: ['organization_id'];
+            isOneToOne: false;
+            referencedRelation: 'organizations';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'recycling_certificates_plant_id_fkey';
+            columns: ['plant_id'];
+            isOneToOne: false;
+            referencedRelation: 'plants';
             referencedColumns: ['id'];
           },
         ];
@@ -1340,6 +1362,7 @@ export type Database = {
       };
       reports: {
         Row: {
+          action_revision: number;
           approved_at: string | null;
           approved_by: string | null;
           change_reason: string | null;
@@ -1358,6 +1381,7 @@ export type Database = {
           withdrawn_at: string | null;
         };
         Insert: {
+          action_revision?: number;
           approved_at?: string | null;
           approved_by?: string | null;
           change_reason?: string | null;
@@ -1376,6 +1400,7 @@ export type Database = {
           withdrawn_at?: string | null;
         };
         Update: {
+          action_revision?: number;
           approved_at?: string | null;
           approved_by?: string | null;
           change_reason?: string | null;
@@ -1415,66 +1440,6 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      update_inspection_schedule: {
-        Args: {
-          p_inspection_id: string;
-          p_expected_updated_at: string;
-          p_scheduled_at: string | null;
-          p_due_at: string | null;
-        };
-        Returns: Database['public']['Tables']['inspections']['Row'];
-      };
-      reopen_inspection: {
-        Args: {
-          p_inspection_id: string;
-          p_expected_updated_at: string;
-          p_reason: string;
-        };
-        Returns: Database['public']['Tables']['inspections']['Row'];
-      };
-      get_quote_requesters: {
-        Args: { p_org: string };
-        Returns: Array<{ plant_id: string; requester_user_id: string }>;
-      };
-      get_public_service_policy: {
-        Args: Record<PropertyKey, never>;
-        Returns: Json;
-      };
-      get_service_onboarding: { Args: { p_org: string }; Returns: Json };
-      complete_service_profile: {
-        Args: {
-          p_org: string;
-          p_details: Json;
-          p_policy_id: string | null;
-          p_accept: boolean;
-        };
-        Returns: undefined;
-      };
-      service_admin_action: {
-        Args: { p_org: string; p_action: string; p_payload?: Json };
-        Returns: Json;
-      };
-      get_my_account_state: {
-        Args: Record<PropertyKey, never>;
-        Returns: Json;
-      };
-      admin_remove_member: {
-        Args: {
-          p_organization_id: string;
-          p_user_id: string;
-          p_expected_updated_at: string;
-        };
-        Returns: undefined;
-      };
-      transfer_super_admin: {
-        Args: {
-          p_organization_id: string;
-          p_target_user_id: string;
-          p_expected_super_admin_user_id: string;
-          p_expected_target_updated_at: string;
-        };
-        Returns: undefined;
-      };
       add_organization_member_by_email: {
         Args: { p_email: string; p_organization_id: string; p_role: string };
         Returns: {
@@ -1482,6 +1447,14 @@ export type Database = {
           member_role: string;
           user_id: string;
         }[];
+      };
+      admin_remove_member: {
+        Args: {
+          p_expected_updated_at: string;
+          p_organization_id: string;
+          p_user_id: string;
+        };
+        Returns: undefined;
       };
       admin_update_member: {
         Args: {
@@ -1573,12 +1546,64 @@ export type Database = {
           requested_at: string;
           requested_by: string | null;
           result_summary: Json | null;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
           started_at: string | null;
           status: string;
         };
         SetofOptions: {
           from: '*';
           to: 'analysis_runs';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      complete_service_profile: {
+        Args: {
+          p_accept: boolean;
+          p_details: Json;
+          p_org: string;
+          p_policy_id: string | null;
+        };
+        Returns: undefined;
+      };
+      correct_recycling_certificate: {
+        Args: {
+          p_id: string;
+          p_issued_on: string;
+          p_issuer: string;
+          p_number: string;
+          p_panel_count: number | null;
+          p_plant_id: string;
+          p_reason: string;
+          p_revision: number;
+          p_title: string;
+        };
+        Returns: {
+          bytes: number;
+          certificate_number: string;
+          created_at: string;
+          created_by: string;
+          id: string;
+          issued_on: string;
+          issuer: string;
+          mime_type: string;
+          organization_id: string;
+          panel_count: number | null;
+          plant_id: string;
+          review_reason: string;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          revision: number;
+          sha256: string;
+          status: string;
+          storage_path: string;
+          title: string;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'recycling_certificates';
           isOneToOne: true;
           isSetofReturn: false;
         };
@@ -1596,6 +1621,7 @@ export type Database = {
           p_title: string;
         };
         Returns: {
+          action_revision: number;
           created_at: string;
           id: string;
           inspection_id: string | null;
@@ -1623,6 +1649,7 @@ export type Database = {
       create_report_draft: {
         Args: { p_inspection_id: string; p_title: string };
         Returns: {
+          action_revision: number;
           approved_at: string | null;
           approved_by: string | null;
           change_reason: string | null;
@@ -1705,20 +1732,6 @@ export type Database = {
           isSetofReturn: false;
         };
       };
-      update_requester_plant: {
-        Args: {
-          p_plant_id: string;
-          p_expected_updated_at: string;
-          p_name: string;
-          p_address: string;
-          p_capacity_kw: number | null;
-          p_commissioned_on: string | null;
-          p_operator_type: string;
-          p_module_model: string;
-          p_inverter_model: string;
-        };
-        Returns: Database['public']['Tables']['plants']['Row'];
-      };
       fail_relative_analysis: {
         Args: { p_analysis_run_id: string; p_message: string };
         Returns: {
@@ -1734,6 +1747,9 @@ export type Database = {
           requested_at: string;
           requested_by: string | null;
           result_summary: Json | null;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
           started_at: string | null;
           status: string;
         };
@@ -1744,6 +1760,17 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      get_my_account_state: { Args: never; Returns: Json };
+      get_public_service_policy: { Args: never; Returns: Json };
+      get_quote_requesters: {
+        Args: { p_org: string };
+        Returns: {
+          plant_id: string;
+          requester_user_id: string;
+        }[];
+      };
+      get_service_onboarding: { Args: { p_org: string }; Returns: Json };
+      project_keepalive: { Args: never; Returns: boolean };
       record_partner_quote_response: {
         Args: {
           p_amount_krw: number;
@@ -1756,6 +1783,7 @@ export type Database = {
           p_valid_until: string | null;
         };
         Returns: {
+          action_revision: number;
           amount_krw: number | null;
           commission_amount_krw: number | null;
           commission_rate: number;
@@ -1780,46 +1808,6 @@ export type Database = {
         SetofOptions: {
           from: '*';
           to: 'partner_quotes';
-          isOneToOne: true;
-          isSetofReturn: false;
-        };
-      };
-      correct_recycling_certificate: {
-        Args: {
-          p_id: string;
-          p_issued_on: string;
-          p_issuer: string;
-          p_number: string;
-          p_panel_count: number | null;
-          p_plant_id: string;
-          p_reason: string;
-          p_revision: number;
-          p_title: string;
-        };
-        Returns: {
-          bytes: number;
-          certificate_number: string;
-          created_at: string;
-          created_by: string;
-          id: string;
-          issued_on: string;
-          issuer: string;
-          mime_type: string;
-          organization_id: string;
-          panel_count: number | null;
-          plant_id: string;
-          review_reason: string;
-          reviewed_at: string | null;
-          reviewed_by: string | null;
-          revision: number;
-          sha256: string;
-          status: string;
-          storage_path: string;
-          title: string;
-        };
-        SetofOptions: {
-          from: '*';
-          to: 'recycling_certificates';
           isOneToOne: true;
           isSetofReturn: false;
         };
@@ -1909,6 +1897,38 @@ export type Database = {
           organization_name: string;
         }[];
       };
+      reopen_inspection: {
+        Args: {
+          p_expected_updated_at: string;
+          p_inspection_id: string;
+          p_reason: string;
+        };
+        Returns: {
+          assigned_expert_user_id: string | null;
+          assigned_field_user_id: string | null;
+          capture_timezone: string;
+          created_at: string;
+          created_by: string | null;
+          due_at: string | null;
+          id: string;
+          inspection_code: string;
+          notes: string | null;
+          organization_id: string;
+          plant_id: string;
+          purpose: string | null;
+          requested_on: string;
+          scheduled_at: string | null;
+          status: string;
+          updated_at: string;
+          workflow_reason: string | null;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'inspections';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       request_inspection: {
         Args: { p_notes: string; p_plant_id: string; p_purpose: string };
         Returns: {
@@ -1928,10 +1948,44 @@ export type Database = {
           scheduled_at: string | null;
           status: string;
           updated_at: string;
+          workflow_reason: string | null;
         };
         SetofOptions: {
           from: '*';
           to: 'inspections';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      resolve_relative_analysis: {
+        Args: {
+          p_action: string;
+          p_analysis_run_id: string;
+          p_expected_status: string;
+          p_reason: string;
+        };
+        Returns: {
+          algorithm_key: string;
+          algorithm_version: string;
+          created_at: string;
+          error_code: string | null;
+          finished_at: string | null;
+          id: string;
+          input_manifest: Json;
+          inspection_id: string;
+          organization_id: string;
+          requested_at: string;
+          requested_by: string | null;
+          result_summary: Json | null;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          started_at: string | null;
+          status: string;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'analysis_runs';
           isOneToOne: true;
           isSetofReturn: false;
         };
@@ -1995,6 +2049,34 @@ export type Database = {
         SetofOptions: {
           from: '*';
           to: 'report_images';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      save_admin_plant: {
+        Args: {
+          p_details: Json;
+          p_expected_updated_at: string | null;
+          p_organization_id: string;
+          p_plant_id: string;
+          p_requester_user_id?: string | null;
+        };
+        Returns: {
+          address: string | null;
+          capacity_kw: number | null;
+          code: string | null;
+          commissioned_on: string | null;
+          created_at: string;
+          id: string;
+          metadata: Json;
+          name: string;
+          organization_id: string;
+          timezone: string;
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'plants';
           isOneToOne: true;
           isSetofReturn: false;
         };
@@ -2072,8 +2154,13 @@ export type Database = {
         Returns: string;
       };
       select_partner_quote: {
-        Args: { p_quote_id: string };
+        Args: {
+          p_expected_quote_revision?: number;
+          p_expected_request_revision?: number;
+          p_quote_id: string;
+        };
         Returns: {
+          action_revision: number;
           amount_krw: number | null;
           commission_amount_krw: number | null;
           commission_rate: number;
@@ -2102,6 +2189,10 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      service_admin_action: {
+        Args: { p_action: string; p_org: string; p_payload?: Json };
+        Returns: Json;
+      };
       start_relative_analysis: {
         Args: { p_inspection_file_id: string; p_normalized_pixels: number };
         Returns: {
@@ -2117,6 +2208,9 @@ export type Database = {
           requested_at: string;
           requested_by: string | null;
           result_summary: Json | null;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
           started_at: string | null;
           status: string;
         };
@@ -2127,13 +2221,25 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      transfer_super_admin: {
+        Args: {
+          p_expected_super_admin_user_id: string;
+          p_expected_target_updated_at: string;
+          p_organization_id: string;
+          p_target_user_id: string;
+        };
+        Returns: undefined;
+      };
       transition_report_status: {
         Args: {
+          p_expected_revision?: number;
+          p_expected_snapshot_sha256?: string | null;
           p_next_status: string;
           p_reason?: string | null;
           p_report_id: string;
         };
         Returns: {
+          action_revision: number;
           approved_at: string | null;
           approved_by: string | null;
           change_reason: string | null;
@@ -2154,6 +2260,71 @@ export type Database = {
         SetofOptions: {
           from: '*';
           to: 'reports';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      update_inspection_schedule: {
+        Args: {
+          p_due_at: string | null;
+          p_expected_updated_at: string;
+          p_inspection_id: string;
+          p_scheduled_at: string | null;
+        };
+        Returns: {
+          assigned_expert_user_id: string | null;
+          assigned_field_user_id: string | null;
+          capture_timezone: string;
+          created_at: string;
+          created_by: string | null;
+          due_at: string | null;
+          id: string;
+          inspection_code: string;
+          notes: string | null;
+          organization_id: string;
+          plant_id: string;
+          purpose: string | null;
+          requested_on: string;
+          scheduled_at: string | null;
+          status: string;
+          updated_at: string;
+          workflow_reason: string | null;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'inspections';
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      update_requester_plant: {
+        Args: {
+          p_address: string;
+          p_capacity_kw: number | null;
+          p_commissioned_on: string | null;
+          p_expected_updated_at: string;
+          p_inverter_model: string;
+          p_module_model: string;
+          p_name: string;
+          p_operator_type: string;
+          p_plant_id: string;
+        };
+        Returns: {
+          address: string | null;
+          capacity_kw: number | null;
+          code: string | null;
+          commissioned_on: string | null;
+          created_at: string;
+          id: string;
+          metadata: Json;
+          name: string;
+          organization_id: string;
+          timezone: string;
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: '*';
+          to: 'plants';
           isOneToOne: true;
           isSetofReturn: false;
         };

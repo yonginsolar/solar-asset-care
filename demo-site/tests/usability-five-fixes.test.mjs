@@ -84,7 +84,7 @@ test('upload selection is readable on closed inspections but row analysis and ne
   );
   assert.match(
     code,
-    /const canAnalyze =[\s\S]*?i.id === file.inspection_id && !inspectionLocked\(i.status\)/,
+    /const canAnalyze =[\s\S]*?i.id === file.inspection_id\s*&&\s*!inspectionLocked\(i.status\)/,
   );
   assert.match(
     code,
@@ -103,7 +103,7 @@ test('upload selection is readable on closed inspections but row analysis and ne
   assert.ok(selector.includes('queue.length > 0'));
   assert.match(
     code,
-    /if \(busy \|\| analyzingFileId \|\| !canAnalyze\(fileRow\)\) return/,
+    /if \(busy \|\| analyzingFileId \|\| resolving \|\| !canAnalyze\(fileRow\)\)\s*return/,
   );
 });
 test('URL menu is limited to the current role and inspection is only an opaque syntactically valid UUID', () => {

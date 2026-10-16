@@ -127,9 +127,24 @@ export async function POST(request: Request) {
 
   const supabase = createClient(projectUrl, publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: {
+      fetch: (input, init) =>
+        fetch(input, {
+          ...init,
+          signal: AbortSignal.any([request.signal, AbortSignal.timeout(10000)]),
+        }),
+    },
   });
-  const { data: userData, error: userError } =
-    await supabase.auth.getUser(accessToken);
+  let verified;
+  try {
+    verified = await supabase.auth.getUser(accessToken);
+  } catch {
+    return Response.json(
+      { error: '로그인 확인 연결이 지연됩니다. 잠시 후 다시 시도해 주세요.' },
+      { status: 503 },
+    );
+  }
+  const { data: userData, error: userError } = verified;
   if (userError || !userData.user) {
     return Response.json(
       { error: '로그인 정보가 만료됐습니다. 다시 로그인해 주세요.' },

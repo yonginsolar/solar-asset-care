@@ -56,21 +56,21 @@ select set_config('request.jwt.claim.sub',:'expert',true);
 set local role authenticated;
 select public.qa_denied(format('select public.update_requester_plant(%L,%L,%L,%L,null,null,%L,%L,%L)',:'plant',:'edited','전문가 수정','','개인','',''),'권한','expert does not gain plant editing rights');
 select id as report from public.create_report_draft(:'inspection','사진 진단 보고서') \gset
-select public.qa_denied(format('select public.transition_report_status(%L,%L,null)',:'report','review'),'승인한 보고서 사진','photo-only review requires approved evidence');
+select public.qa_denied(format('select public.qa_transition_report(%L,%L,null)',:'report','review'),'승인한 보고서 사진','photo-only review requires approved evidence');
 reset role;
 insert into public.report_images(id,organization_id,inspection_id,source_file_id,storage_path,sha256,bytes,width,height,caption,masks,status,created_by,reviewed_by,reviewed_at)
  values(gen_random_uuid(),:'org',:'inspection',:'source','photo-local/approved.jpg',repeat('b',64),100,100,100,'가상 승인 사진','[]','approved',:'expert',:'owner',now());
 select set_config('request.jwt.claim.sub',:'expert',true);
 set local role authenticated;
-select public.transition_report_status(:'report','review',null);
+select public.qa_transition_report(:'report','review',null);
 select public.qa_assert((select content->>'schemaVersion'='2' and content->>'diagnosisMode'='photo-only' and content->'assessment'='null'::jsonb and content->'settings'='null'::jsonb from public.report_snapshots where report_id=:'report'),'photo-only snapshot has no invented financial or capture data');
-select public.qa_denied(format('select public.transition_report_status(%L,%L,null)',:'report','approved'),'관리자','expert still cannot approve');
+select public.qa_denied(format('select public.qa_transition_report(%L,%L,null)',:'report','approved'),'관리자','expert still cannot approve');
 select sha256 as frozen_hash from public.report_snapshots where report_id=:'report' \gset
 reset role;
 select set_config('request.jwt.claim.sub',:'owner',true);
 set local role authenticated;
-select public.transition_report_status(:'report','approved',null);
-select public.qa_denied(format('select public.transition_report_status(%L,%L,null)',:'report','published'),'PDF','photo-only publication still requires immutable PDF archive');
+select public.qa_transition_report(:'report','approved',null);
+select public.qa_denied(format('select public.qa_transition_report(%L,%L,null)',:'report','published'),'PDF','photo-only publication still requires immutable PDF archive');
 reset role;
 select set_config('request.jwt.claim.sub',:'client',true);
 set local role authenticated;

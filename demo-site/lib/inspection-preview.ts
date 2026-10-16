@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Tables } from './supabase/database.types';
+import { verifyOriginal } from './original-integrity';
 
 export const PREVIEW_MAX_EDGE = 960;
 export const PREVIEW_MAX_BYTES = 350_000;
@@ -140,7 +141,9 @@ export async function downloadInspectionOriginal(
     const result = await responseProblem(response);
     throw new Error(result?.error || '원본 사진을 내려받지 못했습니다.');
   }
-  const url = URL.createObjectURL(await response.blob());
+  const original = await response.blob();
+  await verifyOriginal(original, source);
+  const url = URL.createObjectURL(original);
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = source.original_name;

@@ -88,6 +88,10 @@ import { AccountProfile } from './live-profile';
 import { InspectionScheduleEditor } from './live-inspection-schedule';
 import { quoteSelectionLock } from '@/lib/quote-selection';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useGuardedAction } from '@/lib/use-guarded-action';
+import { analyzePixels } from '@/lib/relative-analysis';
+import { verifyOriginal } from '@/lib/original-integrity';
+import { DraftChangeDialog } from './draft-change-dialog';
 import { useSectionDraftProtection } from '@/lib/use-section-draft-protection';
 import {
   inspectionLocked,
@@ -119,7 +123,9 @@ type Inspection = Tables<'inspections'>;
 type InspectionFile = Tables<'inspection_files'>;
 type AnalysisRun = Tables<'analysis_runs'>;
 type Finding = Tables<'findings'>;
-type Report = Tables<'reports'>;
+type Report = Tables<'reports'> & {
+  report_snapshots?: { sha256: string } | null;
+};
 type Maintenance = Tables<'maintenance_requests'>;
 type Partner = Tables<'partners'>;
 type PartnerPrivateDetails = Tables<'partner_private_details'>;
@@ -1274,7 +1280,7 @@ function AdminConsole({
     useState<Destination | null>(null);
   const performNavigation = (next: Destination) => {
     setNotice(null);
-    if (next === 'refresh') void refresh();
+    if (next === 'refresh') void refresh(true);
     else if (next === 'home') router.push('/');
     else if (next === 'logout') void supabase.auth.signOut();
     else if (next.startsWith('inspection:'))
@@ -1315,6 +1321,7 @@ function AdminConsole({
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [loading, setLoading] = useState(true);
   const [loadedView, setLoadedView] = useState<View | null>(null);
+  const [viewRefreshEpoch, setViewRefreshEpoch] = useState(0);
   const readRequest = useRef({
     sequence: 0,
     controller: null as AbortController | null,
@@ -1343,248 +1350,257 @@ function AdminConsole({
     (roleViews[role] ?? ['dashboard']).includes(item.id),
   );
 
-  const refresh = useCallback(async () => {
-    if (currentView.current !== view) return;
-    readRequest.current.controller?.abort();
-    const sequence = ++readRequest.current.sequence;
-    const controller = new AbortController();
-    readRequest.current.controller = controller;
-    const current = () =>
-      readRequest.current.sequence === sequence && currentView.current === view;
-    const timeout = window.setTimeout(() => controller.abort(), 20_000);
-    const needed = workspaceCollections(view, role);
-    setLoading(true);
-    try {
-      const { data: stateData, error: stateError } = await supabase
-        .rpc('get_my_account_state')
-        .abortSignal(controller.signal);
-      if (!current()) return;
-      if (stateError) throw stateError;
-      const accountState = parseAccountState(stateData);
-      if (
-        accountState.accessRemoved ||
-        accountState.needsInitialPassword ||
-        accountState.organizationId !== organizationId
-      ) {
-        await supabase.auth.signOut();
-        throw new Error('현재 계정으로 이 작업공간을 이용할 수 없습니다.');
-      }
-      setWorkspace((current) =>
-        current.superAdminUserId === accountState.superAdminUserId
-          ? current
-          : { ...current, superAdminUserId: accountState.superAdminUserId },
-      );
-      const readiness = await serviceRpc<Onboarding>(
-        supabase,
-        'get_service_onboarding',
-        { p_org: organizationId },
-        controller.signal,
-      );
-      if (!readiness.ready || readiness.role !== role) {
-        window.location.assign('/login');
-        return;
-      }
-      const scoped = <T,>(
-        collection: WorkspaceCollection,
-        request: PromiseLike<{ data: T | null; error: unknown }> & {
-          abortSignal: (
-            signal: AbortSignal,
-          ) => PromiseLike<{ data: T | null; error: unknown }>;
-        },
-      ) =>
-        needed.includes(collection)
-          ? request.abortSignal(controller.signal)
-          : Promise.resolve({ data: null, error: null });
-      const [
-        plantResult,
-        inspectionResult,
-        fileResult,
-        runResult,
-        findingResult,
-        reportResult,
-        maintenanceResult,
-        partnerResult,
-        partnerPrivateResult,
-        quoteRequestResult,
-        partnerQuoteResult,
-        plantRequesterResult,
-        memberResult,
-      ] = await Promise.all([
-        scoped(
-          'plants',
-          supabase
-            .from('plants')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('name'),
-        ),
-        scoped(
-          'inspections',
-          supabase
-            .from('inspections')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'inspection_files',
-          supabase
-            .from('inspection_files')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'analysis_runs',
-          supabase
-            .from('analysis_runs')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('requested_at', { ascending: false }),
-        ),
-        scoped(
-          'findings',
-          supabase
-            .from('findings')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'reports',
-          supabase
-            .from('reports')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'maintenance_requests',
-          supabase
-            .from('maintenance_requests')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'partners',
-          supabase
-            .from('partners')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('name'),
-        ),
-        scoped(
-          'partner_private_details',
-          supabase
-            .from('partner_private_details')
-            .select('*')
-            .order('created_at'),
-        ),
-        scoped(
-          'quote_requests',
-          supabase
-            .from('quote_requests')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'partner_quotes',
-          supabase
-            .from('partner_quotes')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .order('created_at', { ascending: false }),
-        ),
-        scoped(
-          'plant_requesters',
-          supabase.from('plant_requesters').select('*').order('created_at'),
-        ),
-        scoped(
-          'organization_members',
-          supabase
-            .from('organization_members')
-            .select('*')
-            .eq('organization_id', organizationId)
-            .neq('status', 'removed')
-            .order('created_at'),
-        ),
-      ]);
-      if (!current()) return;
-      const results = [
-        plantResult,
-        inspectionResult,
-        fileResult,
-        runResult,
-        findingResult,
-        reportResult,
-        maintenanceResult,
-        partnerResult,
-        partnerPrivateResult,
-        quoteRequestResult,
-        partnerQuoteResult,
-        plantRequesterResult,
-        memberResult,
-      ];
-      const failed = results.find((result) => result.error);
-      if (failed?.error) throw failed.error;
-      const nextMembers = (memberResult.data ?? []) as Membership[];
-      let nextProfiles: Record<string, Profile> = {};
-      if (nextMembers.length) {
-        const { data: profileRows, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .in(
-            'user_id',
-            nextMembers.map((member) => member.user_id),
-          )
+  const refresh = useCallback(
+    async (reloadView = false) => {
+      if (currentView.current !== view) return;
+      readRequest.current.controller?.abort();
+      const sequence = ++readRequest.current.sequence;
+      const controller = new AbortController();
+      readRequest.current.controller = controller;
+      const current = () =>
+        readRequest.current.sequence === sequence &&
+        currentView.current === view;
+      const timeout = window.setTimeout(() => controller.abort(), 20_000);
+      const needed = workspaceCollections(view, role);
+      setLoading(true);
+      try {
+        const { data: stateData, error: stateError } = await supabase
+          .rpc('get_my_account_state')
           .abortSignal(controller.signal);
         if (!current()) return;
-        if (error) throw error;
-        nextProfiles = Object.fromEntries(
-          (profileRows ?? []).map((profile) => [profile.user_id, profile]),
+        if (stateError) throw stateError;
+        const accountState = parseAccountState(stateData);
+        if (
+          accountState.accessRemoved ||
+          accountState.needsInitialPassword ||
+          accountState.organizationId !== organizationId
+        ) {
+          await supabase.auth.signOut();
+          throw new Error('현재 계정으로 이 작업공간을 이용할 수 없습니다.');
+        }
+        setWorkspace((current) =>
+          current.superAdminUserId === accountState.superAdminUserId
+            ? current
+            : { ...current, superAdminUserId: accountState.superAdminUserId },
         );
-      }
-      if (!current()) return;
-      setPlants((plantResult.data ?? []) as Plant[]);
-      setInspections((inspectionResult.data ?? []) as Inspection[]);
-      setFiles((fileResult.data ?? []) as InspectionFile[]);
-      setAnalysisRuns((runResult.data ?? []) as AnalysisRun[]);
-      setFindings((findingResult.data ?? []) as Finding[]);
-      setReports((reportResult.data ?? []) as Report[]);
-      setMaintenance((maintenanceResult.data ?? []) as Maintenance[]);
-      setPartners((partnerResult.data ?? []) as Partner[]);
-      setPartnerPrivateDetails(
-        (partnerPrivateResult.data ?? []) as PartnerPrivateDetails[],
-      );
-      setQuoteRequests((quoteRequestResult.data ?? []) as QuoteRequest[]);
-      setPartnerQuotes((partnerQuoteResult.data ?? []) as PartnerQuote[]);
-      setPlantRequesters((plantRequesterResult.data ?? []) as PlantRequester[]);
-      if (view === 'partners' && isOwner) {
-        const eligible = await supabase
-          .rpc('get_quote_requesters', { p_org: organizationId })
-          .abortSignal(controller.signal);
+        const readiness = await serviceRpc<Onboarding>(
+          supabase,
+          'get_service_onboarding',
+          { p_org: organizationId },
+          controller.signal,
+        );
+        if (!readiness.ready || readiness.role !== role) {
+          window.location.assign('/login');
+          return;
+        }
+        const scoped = <T,>(
+          collection: WorkspaceCollection,
+          request: PromiseLike<{ data: T | null; error: unknown }> & {
+            abortSignal: (
+              signal: AbortSignal,
+            ) => PromiseLike<{ data: T | null; error: unknown }>;
+          },
+        ) =>
+          needed.includes(collection)
+            ? request.abortSignal(controller.signal)
+            : Promise.resolve({ data: null, error: null });
+        const [
+          plantResult,
+          inspectionResult,
+          fileResult,
+          runResult,
+          findingResult,
+          reportResult,
+          maintenanceResult,
+          partnerResult,
+          partnerPrivateResult,
+          quoteRequestResult,
+          partnerQuoteResult,
+          plantRequesterResult,
+          memberResult,
+        ] = await Promise.all([
+          scoped(
+            'plants',
+            supabase
+              .from('plants')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('name'),
+          ),
+          scoped(
+            'inspections',
+            supabase
+              .from('inspections')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'inspection_files',
+            supabase
+              .from('inspection_files')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'analysis_runs',
+            supabase
+              .from('analysis_runs')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('requested_at', { ascending: false }),
+          ),
+          scoped(
+            'findings',
+            supabase
+              .from('findings')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'reports',
+            supabase
+              .from('reports')
+              .select('*,report_snapshots(sha256)')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'maintenance_requests',
+            supabase
+              .from('maintenance_requests')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'partners',
+            supabase
+              .from('partners')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('name'),
+          ),
+          scoped(
+            'partner_private_details',
+            supabase
+              .from('partner_private_details')
+              .select('*')
+              .order('created_at'),
+          ),
+          scoped(
+            'quote_requests',
+            supabase
+              .from('quote_requests')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'partner_quotes',
+            supabase
+              .from('partner_quotes')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .order('created_at', { ascending: false }),
+          ),
+          scoped(
+            'plant_requesters',
+            supabase.from('plant_requesters').select('*').order('created_at'),
+          ),
+          scoped(
+            'organization_members',
+            supabase
+              .from('organization_members')
+              .select('*')
+              .eq('organization_id', organizationId)
+              .neq('status', 'removed')
+              .order('created_at'),
+          ),
+        ]);
         if (!current()) return;
-        if (eligible.error) throw eligible.error;
-        setQuoteRequesters(eligible.data ?? []);
-      } else setQuoteRequesters([]);
-      setMembers(nextMembers);
-      setProfiles(nextProfiles);
-      setLoadedView(view);
-    } catch (error) {
-      if (current())
-        setNotice({
-          tone: 'error',
-          text: controller.signal.aborted
-            ? '연결이 오래 걸려 조회를 중단했습니다. 다시 불러오기를 눌러 주세요.'
-            : errorMessage(error),
-        });
-    } finally {
-      window.clearTimeout(timeout);
-      if (current()) setLoading(false);
-    }
-  }, [organizationId, supabase, view, role]);
+        const results = [
+          plantResult,
+          inspectionResult,
+          fileResult,
+          runResult,
+          findingResult,
+          reportResult,
+          maintenanceResult,
+          partnerResult,
+          partnerPrivateResult,
+          quoteRequestResult,
+          partnerQuoteResult,
+          plantRequesterResult,
+          memberResult,
+        ];
+        const failed = results.find((result) => result.error);
+        if (failed?.error) throw failed.error;
+        const nextMembers = (memberResult.data ?? []) as Membership[];
+        let nextProfiles: Record<string, Profile> = {};
+        if (nextMembers.length) {
+          const { data: profileRows, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .in(
+              'user_id',
+              nextMembers.map((member) => member.user_id),
+            )
+            .abortSignal(controller.signal);
+          if (!current()) return;
+          if (error) throw error;
+          nextProfiles = Object.fromEntries(
+            (profileRows ?? []).map((profile) => [profile.user_id, profile]),
+          );
+        }
+        if (!current()) return;
+        setPlants((plantResult.data ?? []) as Plant[]);
+        setInspections((inspectionResult.data ?? []) as Inspection[]);
+        setFiles((fileResult.data ?? []) as InspectionFile[]);
+        setAnalysisRuns((runResult.data ?? []) as AnalysisRun[]);
+        setFindings((findingResult.data ?? []) as Finding[]);
+        setReports((reportResult.data ?? []) as Report[]);
+        setMaintenance((maintenanceResult.data ?? []) as Maintenance[]);
+        setPartners((partnerResult.data ?? []) as Partner[]);
+        setPartnerPrivateDetails(
+          (partnerPrivateResult.data ?? []) as PartnerPrivateDetails[],
+        );
+        setQuoteRequests((quoteRequestResult.data ?? []) as QuoteRequest[]);
+        setPartnerQuotes((partnerQuoteResult.data ?? []) as PartnerQuote[]);
+        setPlantRequesters(
+          (plantRequesterResult.data ?? []) as PlantRequester[],
+        );
+        if (view === 'partners' && isOwner) {
+          const eligible = await supabase
+            .rpc('get_quote_requesters', { p_org: organizationId })
+            .abortSignal(controller.signal);
+          if (!current()) return;
+          if (eligible.error) throw eligible.error;
+          setQuoteRequesters(eligible.data ?? []);
+        } else setQuoteRequesters([]);
+        setMembers(nextMembers);
+        setProfiles(nextProfiles);
+        setLoadedView(view);
+        // Explicit header refresh reloads independent child queries too. A write's
+        // normal refresh never remounts unrelated drafts, and failed reads keep them.
+        if (reloadView) setViewRefreshEpoch((value) => value + 1);
+      } catch (error) {
+        if (current())
+          setNotice({
+            tone: 'error',
+            text: controller.signal.aborted
+              ? '연결이 오래 걸려 조회를 중단했습니다. 다시 불러오기를 눌러 주세요.'
+              : errorMessage(error),
+          });
+      } finally {
+        window.clearTimeout(timeout);
+        if (current()) setLoading(false);
+      }
+    },
+    [organizationId, supabase, view, role],
+  );
 
   useEffect(() => {
     if (!navigation.ready) return;
@@ -1797,7 +1813,7 @@ function AdminConsole({
                 )}
               </div>
             ) : (
-              <>
+              <div key={viewRefreshEpoch} className="contents">
                 {canUpload &&
                   [
                     'files',
@@ -2011,7 +2027,7 @@ function AdminConsole({
                     organizationId={organizationId}
                   />
                 )}
-              </>
+              </div>
             )}
           </main>
         </div>
@@ -2401,6 +2417,8 @@ function PlantsView(
   const baseline = useRef(draft);
   useDraftProtection(props.canWrite && draft !== baseline.current, busy);
   const saveLock = useRef(false);
+  const plantChange = useGuardedAction();
+  const registrationId = useRef(crypto.randomUUID());
 
   function reset() {
     baseline.current = JSON.stringify([
@@ -2427,6 +2445,7 @@ function PlantsView(
     setInverterModel('');
     setDataUseConsent(false);
     setRequesterId('');
+    registrationId.current = crypto.randomUUID();
   }
 
   function edit(plant: Plant) {
@@ -2464,21 +2483,6 @@ function PlantsView(
     setBusy(true);
     props.setNotice(null);
     try {
-      const previousMetadata = editingId
-        ? jsonRecord(
-            props.plants.find((plant) => plant.id === editingId)?.metadata ??
-              {},
-          )
-        : {};
-      const metadata = {
-        ...previousMetadata,
-        operator_type: operatorType.trim() || null,
-        module_model: moduleModel.trim() || null,
-        inverter_model: inverterModel.trim() || null,
-        data_use_consent_at:
-          previousMetadata.data_use_consent_at || new Date().toISOString(),
-        data_use_consent_version: 'operational-registration-v1',
-      } as Json;
       const result = props.requesterMode
         ? editingId
           ? await props.supabase.rpc('update_requester_plant', {
@@ -2502,51 +2506,28 @@ function PlantsView(
               p_inverter_model: inverterModel.trim(),
               p_data_use_consent: dataUseConsent,
             })
-        : editingId
-          ? await props.supabase
-              .from('plants')
-              .update({
-                organization_id: props.organizationId,
-                name: name.trim(),
-                code: code.trim() || null,
-                address: address.trim() || null,
-                capacity_kw: capacity ? Number(capacity) : null,
-                commissioned_on: commissionedOn || null,
-                timezone: backendConfig.displayTimezone,
-                metadata,
-              })
-              .eq('id', editingId)
-          : await props.supabase
-              .from('plants')
-              .insert({
-                organization_id: props.organizationId,
-                name: name.trim(),
-                code: code.trim() || null,
-                address: address.trim() || null,
-                capacity_kw: capacity ? Number(capacity) : null,
-                commissioned_on: commissionedOn || null,
-                timezone: backendConfig.displayTimezone,
-                metadata,
-              })
-              .select('id')
-              .single();
+        : await props.supabase.rpc('save_admin_plant', {
+            p_organization_id: props.organizationId,
+            p_plant_id: editingId ?? registrationId.current,
+            p_expected_updated_at: editingId ? editingUpdatedAt : null,
+            p_details: {
+              name: name.trim(),
+              code: code.trim(),
+              address: address.trim(),
+              capacity_kw: capacity ? Number(capacity) : null,
+              commissioned_on: commissionedOn || null,
+              operator_type: operatorType,
+              module_model: moduleModel.trim(),
+              inverter_model: inverterModel.trim(),
+              data_use_consent: dataUseConsent,
+            },
+            p_requester_user_id: !editingId && requesterId ? requesterId : null,
+          });
       if (result.error) throw result.error;
-      if (
-        !props.requesterMode &&
-        !editingId &&
-        requesterId &&
-        result.data &&
-        'id' in result.data
-      ) {
-        const { error } = await props.supabase.rpc(
-          'assign_requester_to_plant',
-          {
-            p_plant_id: result.data.id,
-            p_requester_user_id: requesterId,
-          },
+      if (!result.data)
+        throw new Error(
+          '발전소 저장 결과를 확인하지 못했습니다. 같은 입력으로 결과를 확인해 주세요.',
         );
-        if (error) throw error;
-      }
       props.setNotice({
         tone: 'success',
         text: editingId
@@ -2582,6 +2563,7 @@ function PlantsView(
             : '점검과 보고서가 연결될 기준 자산을 등록합니다. 용량은 kW, 시간은 발전소의 현지 시간대를 기준으로 표시합니다.'
         }
       />
+      <DraftChangeDialog guard={plantChange} />
       <div
         className={`grid gap-5 ${props.canWrite ? 'xl:grid-cols-[380px_1fr]' : ''}`}
       >
@@ -2602,7 +2584,8 @@ function PlantsView(
                 {editingId && (
                   <button
                     type="button"
-                    onClick={reset}
+                    disabled={busy}
+                    onClick={() => plantChange.request(reset)}
                     className="text-xs text-slate-500 underline"
                   >
                     취소
@@ -2793,7 +2776,11 @@ function PlantsView(
                     variant="outline"
                     size="sm"
                     type="button"
-                    onClick={() => edit(plant)}
+                    disabled={busy}
+                    onClick={() => {
+                      if (editingId !== plant.id)
+                        plantChange.request(() => edit(plant));
+                    }}
                   >
                     수정
                   </Button>
@@ -3367,14 +3354,28 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
     }>
   >([]);
   const uploadController = useRef<AbortController | null>(null);
-  useEffect(() => () => uploadController.current?.abort(), []);
+  const analysisController = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      uploadController.current?.abort();
+      analysisController.current?.abort();
+    },
+    [],
+  );
   const [runAnalysis, setRunAnalysis] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [analyzingFileId, setAnalyzingFileId] = useState<string | null>(null);
+  const [resolution, setResolution] = useState<{
+    run: AnalysisRun;
+    action: 'cancel' | 'manual_review';
+  } | null>(null);
+  const [resolutionReason, setResolutionReason] = useState('');
+  const [resolving, setResolving] = useState(false);
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
   useDraftProtection(
     queue.some((item) => item.status !== 'done'),
-    busy || Boolean(analyzingFileId),
+    busy || Boolean(analyzingFileId) || resolving,
   );
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(
     null,
@@ -3396,8 +3397,60 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   const canAnalyze = (file: InspectionFile) =>
     props.canWrite &&
     props.inspections.some(
-      (i) => i.id === file.inspection_id && !inspectionLocked(i.status),
+      (i) =>
+        i.id === file.inspection_id &&
+        !inspectionLocked(i.status) &&
+        !['approval', 'published'].includes(i.status),
     );
+  const latestRuns = Array.from(
+    new Map(
+      props.analysisRuns
+        .filter(
+          (r) =>
+            r.inspection_id === effectiveInspectionId &&
+            r.algorithm_key === 'rgb-luminance-relative',
+        )
+        .sort(
+          (a, b) =>
+            Date.parse(a.started_at ?? a.requested_at) -
+            Date.parse(b.started_at ?? b.requested_at),
+        )
+        .map((r) => [
+          jsonText(jsonRecord(r.input_manifest).inspection_file_id),
+          r,
+        ]),
+    ).values(),
+  );
+  const unfinishedRuns = latestRuns.filter(
+    (r) =>
+      r.status === 'running' ||
+      (['failed', 'cancelled'].includes(r.status) && !r.reviewed_at),
+  );
+  async function resolveAnalysis() {
+    if (!resolution || busy || analyzingFileId || resolving) return;
+    setResolving(true);
+    setResolutionError(null);
+    try {
+      const { error } = await props.supabase.rpc('resolve_relative_analysis', {
+        p_analysis_run_id: resolution.run.id,
+        p_expected_status: resolution.run.status,
+        p_action: resolution.action,
+        p_reason: resolutionReason.trim(),
+      });
+      if (error) throw error;
+      setResolution(null);
+      props.setNotice({
+        tone: 'success',
+        text: '분석 상태 확인을 기록했습니다. 원본과 판정 근거는 그대로 보존됩니다.',
+      });
+      await props.refresh();
+    } catch (error) {
+      setResolutionError(errorMessage(error));
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
+    } finally {
+      setResolving(false);
+    }
+  }
 
   const hasSuccessfulAnalysis = (fileId: string) =>
     props.analysisRuns.some((run) => {
@@ -3408,7 +3461,11 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
       );
     });
 
-  async function analyzeFile(file: File, fileRow: InspectionFile) {
+  async function analyzeFile(
+    file: File,
+    fileRow: InspectionFile,
+    signal?: AbortSignal,
+  ) {
     if (!['image/jpeg', 'image/png'].includes(file.type)) {
       throw new Error(
         '상대 분석은 JPG 또는 PNG 원본에서만 실행할 수 있습니다.',
@@ -3419,80 +3476,41 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
     }
 
     const pixels = await imageValues(file);
-    const { data: run, error: createRunError } = await props.supabase.rpc(
-      'start_relative_analysis',
-      {
-        p_inspection_file_id: fileRow.id,
-        p_normalized_pixels: pixels.width * pixels.height,
-      },
+    return analyzePixels(
+      props.supabase,
+      fileRow.id,
+      pixels,
+      props.session.access_token,
+      signal,
     );
-    if (createRunError) throw createRunError;
-
-    try {
-      const response = await fetch('/api/thermal/analyze', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${props.session.access_token}`,
-        },
-        body: JSON.stringify({ ...pixels, sensitivity: 72 }),
-      });
-      const analysis = (await response.json()) as AnalysisResult & {
-        error?: string;
-      };
-      if (!response.ok)
-        throw new Error(analysis.error || '상대 분석에 실패했습니다.');
-
-      const { error: finishRunError } = await props.supabase.rpc(
-        'complete_relative_analysis',
-        {
-          p_analysis_run_id: run.id,
-          p_result_summary: {
-            ...analysis.summary,
-            disclaimer: analysis.disclaimer,
-            analyzed_at: analysis.analyzedAt,
-            quality: analysis.quality ?? 'relative',
-          } as Json,
-          p_regions: analysis.regions.map((region) => ({
-            kind: region.kind,
-            x: region.x,
-            y: region.y,
-            width: region.width,
-            height: region.height,
-            area_percent: region.areaPercent,
-            score: region.score,
-          })) as Json,
-        },
-      );
-      if (finishRunError) throw finishRunError;
-
-      return {
-        count: analysis.regions.length,
-        uniform: analysis.quality === 'uniform',
-      };
-    } catch (error) {
-      await props.supabase.rpc('fail_relative_analysis', {
-        p_analysis_run_id: run.id,
-        p_message: errorMessage(error).slice(0, 300),
-      });
-      throw error;
-    }
   }
 
   async function retryAnalysis(fileRow: InspectionFile) {
-    if (busy || analyzingFileId || !canAnalyze(fileRow)) return;
+    if (busy || analyzingFileId || resolving || !canAnalyze(fileRow)) return;
+    const controller = new AbortController();
+    analysisController.current = controller;
     setAnalyzingFileId(fileRow.id);
     props.setNotice({ tone: 'info', text: '저장된 원본을 다시 분석합니다.' });
     try {
       const { data, error } = await props.supabase.storage
         .from(fileRow.storage_bucket)
-        .download(fileRow.storage_path);
+        .download(
+          fileRow.storage_path,
+          {},
+          {
+            signal: AbortSignal.any([
+              controller.signal,
+              AbortSignal.timeout(30000),
+            ]),
+          },
+        );
       if (error) throw error;
+      await verifyOriginal(data, fileRow);
       const file = new File([data], fileRow.original_name, {
         type: fileRow.mime_type ?? data.type,
       });
       await verifiedImageType(file);
-      const result = await analyzeFile(file, fileRow);
+      const result = await analyzeFile(file, fileRow, controller.signal);
       props.setNotice({
         tone: result.uniform ? 'info' : 'success',
         text: result.uniform
@@ -3505,6 +3523,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
       await props.refresh();
     } finally {
       setAnalyzingFileId(null);
+      analysisController.current = null;
     }
   }
 
@@ -3576,7 +3595,11 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               const normalized = new File([item.file], item.file.name, {
                 type: fileRow.mime_type || '',
               });
-              const result = await analyzeFile(normalized, fileRow);
+              const result = await analyzeFile(
+                normalized,
+                fileRow,
+                controller.signal,
+              );
               message += result.uniform
                 ? ' · 명암 차이 없음: 원본·촬영 조건 확인 필요 (정상 판정 아님)'
                 : ` · 후보 ${result.count}건`;
@@ -3632,6 +3655,113 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   return (
     <>
       <PageHeading eyebrow="FILES" title="열화상·가시광 원본 업로드" />
+      <AlertDialog
+        open={resolution !== null}
+        onOpenChange={(open) => {
+          if (!open && !resolving) setResolution(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {resolution?.action === 'cancel'
+                ? '분석 실행을 중단할까요?'
+                : '원본 사진으로 직접 검토할까요?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              원본은 삭제하지 않습니다. 실패·중단된 자동 분석을 사용하지 않고
+              사진으로 검토하면 그 확인 사유를 기록합니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="grid gap-2 text-sm">
+            확인 사유
+            <Textarea
+              value={resolutionReason}
+              maxLength={300}
+              disabled={resolving}
+              onChange={(e) => setResolutionReason(e.target.value)}
+            />
+          </label>
+          {resolutionError && (
+            <p role="alert" className="text-sm text-red-700">
+              {resolutionError}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resolving}>취소</AlertDialogCancel>
+            <Button
+              disabled={resolving || !resolutionReason.trim()}
+              onClick={() => void resolveAnalysis()}
+            >
+              {resolving ? '확인 중…' : '확인 기록'}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {analyzingFileId && (
+        <Button
+          className="mb-4"
+          variant="outline"
+          onClick={() => analysisController.current?.abort()}
+        >
+          분석 중단
+        </Button>
+      )}
+      {unfinishedRuns.length > 0 && (
+        <section
+          className="mb-5 space-y-3 rounded-2xl border bg-amber-50 p-4"
+          aria-label="분석 실행 확인"
+        >
+          <h2 className="font-bold">분석 실행 확인</h2>
+          {unfinishedRuns.map((run) => (
+            <div
+              key={run.id}
+              className="flex flex-wrap items-center justify-between gap-3 text-sm"
+            >
+              <span className="min-w-0 break-all">
+                {props.files.find(
+                  (f) =>
+                    f.id ===
+                    jsonText(jsonRecord(run.input_manifest).inspection_file_id),
+                )?.original_name ?? '저장 원본'}{' '}
+                ·{' '}
+                {run.status === 'running'
+                  ? '분석 중 · 응답 미확인'
+                  : run.status === 'failed'
+                    ? '분석 실패'
+                    : '분석 중단'}
+              </span>
+              {props.canWrite &&
+                !['closed', 'cancelled', 'approval', 'published'].includes(
+                  currentInspection?.status ?? '',
+                ) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy || Boolean(analyzingFileId) || resolving}
+                    onClick={() => {
+                      setResolutionError(null);
+                      setResolution({
+                        run,
+                        action:
+                          run.status === 'running' ? 'cancel' : 'manual_review',
+                      });
+                      setResolutionReason(
+                        run.status === 'running'
+                          ? '분석 응답을 확인하지 못해 실행을 중단합니다.'
+                          : '원본 사진을 직접 검토하고 이 자동 분석 결과는 사용하지 않습니다.',
+                      );
+                    }}
+                  >
+                    {run.status === 'running'
+                      ? '실행 중단 확인'
+                      : '사진으로 직접 검토'}
+                  </Button>
+                )}
+            </div>
+          ))}
+        </section>
+      )}
       <div className="grid gap-5 xl:grid-cols-[390px_1fr]">
         <form
           onSubmit={upload}
@@ -3842,7 +3972,17 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                         variant="outline"
                         size="sm"
                         disabled={
-                          !canAnalyze(file) || busy || analyzingFileId !== null
+                          !canAnalyze(file) ||
+                          busy ||
+                          analyzingFileId !== null ||
+                          resolving ||
+                          latestRuns.some(
+                            (r) =>
+                              r.status === 'running' &&
+                              jsonText(
+                                jsonRecord(r.input_manifest).inspection_file_id,
+                              ) === file.id,
+                          )
                         }
                         onClick={() => void retryAnalysis(file)}
                         className="min-h-11 sm:min-h-7"
@@ -3957,6 +4097,8 @@ function ReportsView(
       const { error } = await props.supabase.rpc('transition_report_status', {
         p_report_id: report.id,
         p_next_status: status,
+        p_expected_revision: report.action_revision,
+        p_expected_snapshot_sha256: report.report_snapshots?.sha256 ?? null,
         p_reason:
           status === 'draft' || status === 'withdrawn'
             ? reasonByReport[report.id]?.trim() || null
@@ -4546,6 +4688,11 @@ function PartnerQuotesView(
   const [requestBusy, setRequestBusy] = useState(false);
   const [savingQuoteId, setSavingQuoteId] = useState<string | null>(null);
   const [selectingQuoteId, setSelectingQuoteId] = useState<string | null>(null);
+  const [quoteConfirmation, setQuoteConfirmation] = useState<{
+    quote: PartnerQuote;
+    request: QuoteRequest;
+  } | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
 
   const operationLock = useRef(false);
   const anyBusy =
@@ -4773,13 +4920,16 @@ function PartnerQuotesView(
     }
   }
 
-  async function selectQuote(quoteId: string) {
+  async function selectQuote(quote: PartnerQuote, request: QuoteRequest) {
     if (!beginOperation()) return;
-    setSelectingQuoteId(quoteId);
+    setSelectingQuoteId(quote.id);
+    setQuoteError(null);
     props.setNotice(null);
     try {
       const { error } = await props.supabase.rpc('select_partner_quote', {
-        p_quote_id: quoteId,
+        p_quote_id: quote.id,
+        p_expected_quote_revision: quote.action_revision,
+        p_expected_request_revision: request.action_revision,
       });
       if (error) throw error;
       props.setNotice({
@@ -4788,7 +4938,9 @@ function PartnerQuotesView(
       });
 
       await props.refresh();
+      setQuoteConfirmation(null);
     } catch (error) {
+      setQuoteError(errorMessage(error));
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       operationLock.current = false;
@@ -4799,6 +4951,70 @@ function PartnerQuotesView(
   if (props.requesterMode) {
     return (
       <>
+        <AlertDialog
+          open={quoteConfirmation !== null}
+          onOpenChange={(open) => {
+            if (!open && !selectingQuoteId) setQuoteConfirmation(null);
+          }}
+        >
+          <AlertDialogContent className="max-h-[85dvh] overflow-y-auto">
+            <AlertDialogHeader>
+              <AlertDialogTitle>이 견적의 업체를 선택할까요?</AlertDialogTitle>
+              <AlertDialogDescription>
+                금액과 작업 조건을 확인해 주세요. 변경된 견적은 다시 확인해야
+                하며, 작업이 시작되면 업체를 바꿀 수 없습니다.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {quoteConfirmation && (
+              <div className="space-y-3 break-words text-sm">
+                <strong>
+                  {partnerById[quoteConfirmation.quote.partner_id]?.name} ·{' '}
+                  {formatWon(quoteConfirmation.quote.amount_krw)}
+                </strong>
+                <p>
+                  예상 기간:{' '}
+                  {quoteConfirmation.quote.estimated_days
+                    ? `${quoteConfirmation.quote.estimated_days}일`
+                    : '협의'}{' '}
+                  · 시작 예정:{' '}
+                  {quoteConfirmation.quote.proposed_start_on ?? '협의'}
+                </p>
+                <p>
+                  유효일:{' '}
+                  {quoteConfirmation.quote.valid_until ?? '별도 기재 없음'}
+                </p>
+                <p className="whitespace-pre-wrap">
+                  작업 범위: {quoteConfirmation.quote.scope ?? '별도 기재 없음'}
+                </p>
+                <p className="whitespace-pre-wrap">
+                  조건: {quoteConfirmation.quote.conditions ?? '별도 기재 없음'}
+                </p>
+              </div>
+            )}
+            {quoteError && (
+              <p role="alert" className="text-sm text-red-700">
+                {quoteError}
+              </p>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={Boolean(selectingQuoteId)}>
+                다시 비교
+              </AlertDialogCancel>
+              <Button
+                disabled={Boolean(selectingQuoteId)}
+                onClick={() => {
+                  if (quoteConfirmation)
+                    void selectQuote(
+                      quoteConfirmation.quote,
+                      quoteConfirmation.request,
+                    );
+                }}
+              >
+                {selectingQuoteId ? '선택 확인 중…' : '조건 확인 후 선택'}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         <PageHeading
           eyebrow="QUOTE COMPARISON"
           title="업체 견적 비교·선택"
@@ -4847,6 +5063,9 @@ function PartnerQuotesView(
                     {quotes.map((quote) => {
                       const partner = partnerById[quote.partner_id];
                       const selected = request.selected_quote_id === quote.id;
+                      const expired = Boolean(
+                        quote.valid_until && quote.valid_until < koreanDate(),
+                      );
                       return (
                         <div
                           key={quote.id}
@@ -4880,8 +5099,22 @@ function PartnerQuotesView(
                               : '협의'}
                           </p>
                           {quote.scope && (
-                            <p className="mt-3 line-clamp-3 text-xs leading-5 text-slate-600">
+                            <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600">
                               {quote.scope}
+                            </p>
+                          )}
+                          <p className="mt-2 text-xs leading-5 text-slate-600">
+                            시작 예정: {quote.proposed_start_on ?? '협의'} ·
+                            유효일: {quote.valid_until ?? '별도 기재 없음'}
+                          </p>
+                          {quote.conditions && (
+                            <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600">
+                              조건: {quote.conditions}
+                            </p>
+                          )}
+                          {expired && !selected && (
+                            <p className="mt-2 text-xs text-amber-800">
+                              유효기간 만료 · 최신 견적 확인이 필요합니다.
                             </p>
                           )}
                           <Button
@@ -4890,6 +5123,7 @@ function PartnerQuotesView(
                             variant={selected ? 'outline' : 'default'}
                             disabled={
                               selected ||
+                              expired ||
                               Boolean(selectionLock) ||
                               selectingQuoteId !== null ||
                               ![
@@ -4898,7 +5132,10 @@ function PartnerQuotesView(
                                 'not_selected',
                               ].includes(quote.status)
                             }
-                            onClick={() => void selectQuote(quote.id)}
+                            onClick={() => {
+                              setQuoteError(null);
+                              setQuoteConfirmation({ quote, request });
+                            }}
                           >
                             {selectingQuoteId === quote.id ? (
                               <Loader2 className="animate-spin" />

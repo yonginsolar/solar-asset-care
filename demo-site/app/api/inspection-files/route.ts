@@ -5,6 +5,7 @@ import {
   PREVIEW_MAX_EDGE,
 } from '@/lib/inspection-preview';
 import { cleanReportJpeg } from '@/lib/report-visuals';
+import { verifyOriginal } from '@/lib/original-integrity';
 
 const uuid = (s: string) =>
   /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s);
@@ -125,6 +126,15 @@ export async function GET(request: Request) {
         );
       if (error || !data || data.size !== source.bytes)
         return fail('원본을 불러오지 못했습니다.', 503);
+      try {
+        await verifyOriginal(data, source);
+      } catch {
+        return fail(
+          '원본 파일의 확인값이 다릅니다. 관리자에게 문의해 주세요.',
+          409,
+          'original_integrity_mismatch',
+        );
+      }
       return new Response(data, {
         headers: {
           ...privateHeaders,

@@ -1,4 +1,17 @@
 -- Synthetic full-schema integration test. Run only on an isolated local DB.
+-- Helpers supply the exact currently read revision for existing happy-path suites.
+-- Dedicated guarded_actions.sql exercises stale/missing identities directly.
+create function public.qa_transition_report(p_id uuid,p_status text,p_reason text default null)
+returns public.reports language sql security invoker set search_path='' as $$
+ select public.transition_report_status(p_id,p_status,p_reason,
+ (select action_revision from public.reports where id=p_id),
+ (select sha256 from public.report_snapshots where report_id=p_id));
+$$;
+create function public.qa_select_quote(p_id uuid) returns public.partner_quotes
+language sql security invoker set search_path='' as $$
+ select public.select_partner_quote(p_id,(select action_revision from public.partner_quotes where id=p_id),
+ (select r.action_revision from public.quote_requests r join public.partner_quotes q on q.quote_request_id=r.id where q.id=p_id));
+$$;
 create function public.qa_assert(ok boolean,label text) returns void language plpgsql as $$
 begin if ok is not true then raise exception 'FAIL %',label; end if; raise notice 'PASS %',label; end$$;
 create function public.qa_denied(statement text,pattern text,label text) returns void language plpgsql as $$
