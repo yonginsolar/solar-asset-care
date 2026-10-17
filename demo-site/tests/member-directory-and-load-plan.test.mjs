@@ -129,7 +129,11 @@ test('view reads keep server authorization, abort superseded requests and expose
       consoleCode.indexOf('const scoped'),
   );
   assert.ok(consoleCode.includes('needed.includes(collection)'));
-  assert.ok(consoleCode.includes('request.abortSignal(controller.signal)'));
+  assert.match(
+    consoleCode,
+    /request\(from === 0 \? 'exact' : undefined\)[\s\S]*?\.range\(from,\s*to\)[\s\S]*?\.abortSignal\(controller.signal\)/,
+  );
+  assert.ok(consoleCode.includes('collectPagedRows'));
   assert.ok(consoleCode.includes('currentView.current === view'));
   assert.ok(consoleCode.includes('if (!current()) return;'));
   assert.ok(consoleCode.includes('20_000'));

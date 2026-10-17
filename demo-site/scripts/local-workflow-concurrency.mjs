@@ -123,6 +123,40 @@ export async function checkConcurrency({ bin, env, sql }) {
     console.log(
       'PASS concurrent report creation: exactly one active draft and one explicit rejection',
     );
+    const client = sql(
+      "select id from auth.users where email='service-client-a@example.invalid';",
+    ).trim();
+    const key = sql('select gen_random_uuid();').trim();
+    const clientClaims = `select set_config('request.jwt.claim.sub','${client}',false);set role authenticated;set statement_timeout='5s';`;
+    sql(
+      `${clientClaims}select public.complete_service_profile('${row.org}','{"name":"가상 동시 시험 고객","phone":"01012345678","kind":"individual"}',(public.get_service_onboarding('${row.org}')->'policy'->>'id')::uuid,true);`,
+    );
+    const create = () =>
+      start(
+        `${clientClaims}select 'RESULT:'||id from public.create_requester_plant_with_details('동시 재전송','',null,null,'개인','','',true,'${key}');\n`,
+      );
+    const first = create(),
+      retry = create();
+    first.process.stdin.end();
+    retry.process.stdin.end();
+    assert.deepEqual(
+      await Promise.all([first.done, retry.done]),
+      [0, 0],
+      first.err + retry.err,
+    );
+    assert.equal(
+      first.out.match(/RESULT:([\w-]+)/)?.[1],
+      retry.out.match(/RESULT:([\w-]+)/)?.[1],
+    );
+    assert.equal(
+      sql(
+        "select count(*) from public.plants where name='동시 재전송';",
+      ).trim(),
+      '1',
+    );
+    console.log(
+      'PASS concurrent requester registration replay: one plant, one receipt, identical result ID',
+    );
   } finally {
     for (const s of active) s.process.kill('SIGTERM');
     await Promise.all([...active].map((s) => s.done));

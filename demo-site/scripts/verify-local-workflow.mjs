@@ -79,6 +79,10 @@ try {
   }
   sql(readFileSync(join(root, 'supabase/tests/service_access.sql'), 'utf8'));
   checks++;
+  sql(
+    readFileSync(join(root, 'supabase/tests/role_journey_safety.sql'), 'utf8'),
+  );
+  checks++;
   const progressive = readFileSync(
     join(root, 'supabase/tests/progressive_photo_diagnosis.sql'),
     'utf8',

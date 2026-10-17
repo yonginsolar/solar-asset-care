@@ -2191,6 +2191,186 @@ try {
     'correction preserves original bytes and requires fresh publication',
   );
   certificate = corrected;
+  // New journey guards exercised with real issued Auth tokens, isolated org only.
+  const expertBefore = await required(
+    owner.client
+      .from('organization_members')
+      .select('*')
+      .eq('organization_id', organization.id)
+      .eq('user_id', expert.id)
+      .single(),
+  );
+  const suspended = await required(
+    owner.client.rpc('admin_update_member', {
+      p_organization_id: organization.id,
+      p_user_id: expert.id,
+      p_role: null,
+      p_status: 'suspended',
+      p_expected_updated_at: expertBefore.updated_at,
+    }),
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('admin_update_member', {
+          p_organization_id: organization.id,
+          p_user_id: expert.id,
+          p_role: 'client',
+          p_status: null,
+          p_expected_updated_at: expertBefore.updated_at,
+        })
+      ).error,
+    ),
+    'stale member role change cannot reactivate suspended expert',
+  );
+  const roleOnly = await required(
+    owner.client.rpc('admin_update_member', {
+      p_organization_id: organization.id,
+      p_user_id: expert.id,
+      p_role: 'expert',
+      p_status: null,
+      p_expected_updated_at: suspended.updated_at,
+    }),
+  );
+  check(
+    roleOnly.status === 'suspended',
+    'fresh role-only action preserves suspension',
+  );
+  await required(
+    owner.client.rpc('admin_update_member', {
+      p_organization_id: organization.id,
+      p_user_id: expert.id,
+      p_role: null,
+      p_status: 'active',
+      p_expected_updated_at: roleOnly.updated_at,
+    }),
+  );
+  check(
+    Boolean(
+      (
+        await owner.client.rpc('admin_update_member', {
+          p_organization_id: organization.id,
+          p_user_id: expert.id,
+          p_role: 'expert',
+          p_status: 'active',
+        })
+      ).error,
+    ),
+    'legacy unchecked membership mutation rejected',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client
+          .from('analysis_runs')
+          .delete()
+          .eq('organization_id', organization.id)
+      ).error,
+    ),
+    'administrator cannot delete analysis evidence directly',
+  );
+  const intake = {
+    p_name: '[격리] 재전송 확인 발전소',
+    p_address: '',
+    p_capacity_kw: null,
+    p_commissioned_on: null,
+    p_operator_type: '개인',
+    p_module_model: '',
+    p_inverter_model: '',
+    p_data_use_consent: true,
+    p_request_id: randomUUID(),
+  };
+  const intakePlant = await required(
+    client.client.rpc('create_requester_plant_with_details', intake),
+  );
+  const intakeReplay = await required(
+    client.client.rpc('create_requester_plant_with_details', intake),
+  );
+  check(
+    intakePlant.id === intakeReplay.id,
+    'requester plant response replay returns one ID',
+  );
+  check(
+    Boolean(
+      (
+        await client.client.rpc('create_requester_plant_with_details', {
+          ...intake,
+          p_name: '다른 입력',
+        })
+      ).error,
+    ),
+    'changed registration payload cannot reuse receipt',
+  );
+  const request = {
+    p_plant_id: intakePlant.id,
+    p_purpose: '[격리] 동일 점검 재전송',
+    p_notes: '실제 작업 아님',
+    p_request_id: randomUUID(),
+  };
+  const intakeInspection = await required(
+    client.client.rpc('request_inspection', request),
+  );
+  check(
+    intakeInspection.id ===
+      (await required(client.client.rpc('request_inspection', request))).id,
+    'requester inspection response replay creates one case',
+  );
+  check(
+    Boolean(
+      (await otherClient.client.rpc('request_inspection', request)).error,
+    ),
+    'receipt does not grant unrelated requester access',
+  );
+  if (process.env.SOLAR_PAGINATION_ACCEPTANCE === '1') {
+    const rows = Array.from({ length: 1001 }, (_, i) => ({
+      organization_id: organization.id,
+      name: `[격리 목록] ${String(i).padStart(4, '0')}`,
+    }));
+    for (let at = 0; at < rows.length; at += 250)
+      await required(
+        owner.client.from('plants').insert(rows.slice(at, at + 250)),
+      );
+    const compiled = ts.transpileModule(
+      readFileSync(new URL('../lib/paged-rows.ts', import.meta.url), 'utf8'),
+      {
+        compilerOptions: {
+          module: ts.ModuleKind.ESNext,
+          target: ts.ScriptTarget.ES2022,
+        },
+      },
+    ).outputText;
+    const { collectPagedRows, collectionRowKey } = await import(
+      'data:text/javascript;base64,' + Buffer.from(compiled).toString('base64')
+    );
+    const paged = await collectPagedRows(
+      (from, to) => {
+        const started = Date.now();
+        return owner.client
+          .from('plants')
+          .select('*', { count: from === 0 ? 'exact' : undefined })
+          .eq('organization_id', organization.id)
+          .order('name')
+          .order('id')
+          .range(from, to)
+          .then((result) => {
+            console.log(`Page ${from}-${to}: ${Date.now() - started}ms`);
+            return result;
+          });
+      },
+      AbortSignal.timeout(20000),
+      collectionRowKey,
+    );
+    const count = await owner.client
+      .from('plants')
+      .select('id', { head: true, count: 'exact' })
+      .eq('organization_id', organization.id);
+    check(
+      !count.error &&
+        paged.data.length === count.count &&
+        paged.data.length > 1000,
+      'actual bounded page reader returns all >1,000 plants without changing RLS',
+    );
+  }
   if (process.env.SOLAR_UI_ACCEPTANCE === '1') {
     const uiWork = await required(
       owner.client
@@ -2475,11 +2655,14 @@ try {
     const plants = await required(
       admin.from('plants').select('id').eq('organization_id', organizationId),
     );
-    for (const p of plants) {
+    for (let at = 0; at < plants.length; at += 100) {
       const r = await admin
         .from('plant_requesters')
         .delete()
-        .eq('plant_id', p.id);
+        .in(
+          'plant_id',
+          plants.slice(at, at + 100).map((p) => p.id),
+        );
       if (r.error) cleanupErrors.push(`access: ${r.error.message}`);
     }
     for (const table of ['plants', 'calculation_settings', 'audit_events']) {

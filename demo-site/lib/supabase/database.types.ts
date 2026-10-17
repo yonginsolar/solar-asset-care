@@ -1459,9 +1459,10 @@ export type Database = {
       admin_update_member: {
         Args: {
           p_organization_id: string;
-          p_role: string;
-          p_status: string;
+          p_role: string | null;
+          p_status: string | null;
           p_user_id: string;
+          p_expected_updated_at: string;
         };
         Returns: {
           created_at: string;
@@ -1703,6 +1704,7 @@ export type Database = {
       };
       create_requester_plant_with_details: {
         Args: {
+          p_request_id?: string;
           p_address: string;
           p_capacity_kw: number | null;
           p_commissioned_on: string | null;
@@ -1930,7 +1932,12 @@ export type Database = {
         };
       };
       request_inspection: {
-        Args: { p_notes: string; p_plant_id: string; p_purpose: string };
+        Args: {
+          p_notes: string;
+          p_plant_id: string;
+          p_purpose: string;
+          p_request_id?: string;
+        };
         Returns: {
           assigned_expert_user_id: string | null;
           assigned_field_user_id: string | null;

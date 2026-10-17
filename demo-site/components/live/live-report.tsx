@@ -26,6 +26,7 @@ import { parseAccountState } from '@/lib/account-access';
 import { portalForRole, portalPath, portalTitle } from '@/lib/portal';
 import { EconomicChart, ReportPhoto } from './report-visuals';
 import type { ReportImage } from '@/lib/report-visuals';
+import { reportSessionBoundary } from '@/lib/report-session';
 
 type Report = Tables<'reports'>;
 type Inspection = Tables<'inspections'>;
@@ -62,7 +63,16 @@ function format(value: string | null) {
 
 export function LiveReport({ reportId }: { reportId: string }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
-  const [data, setData] = useState<ReportData | null>(null);
+  const boundary = useMemo(reportSessionBoundary, []);
+  const [sessionUserId, setSessionUserId] = useState<string | null>();
+  const [reportState, setReportState] = useState<{
+    owner: string;
+    value: ReportData;
+  } | null>(null);
+  const data =
+    sessionUserId && reportState?.owner === sessionUserId
+      ? reportState.value
+      : null;
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
@@ -75,61 +85,116 @@ export function LiveReport({ reportId }: { reportId: string }) {
     if (!supabase || !data || downloading) return;
     setDownloading(true);
     setError('');
+    const ticket = boundary.ticket();
     try {
       const response = await requestReportPdf(supabase, reportId);
-      const url = URL.createObjectURL(await response.blob());
+      const blob = await response.blob();
+      if (!boundary.current(ticket)) return;
+      const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = `진단보고서-${data.report.version}차.pdf`;
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'PDF를 내려받지 못했습니다.');
+      if (boundary.current(ticket))
+        setError(e instanceof Error ? e.message : 'PDF를 내려받지 못했습니다.');
     } finally {
-      setDownloading(false);
+      if (boundary.current(ticket)) setDownloading(false);
     }
   }
 
   useEffect(() => {
+    if (!supabase) {
+      setSessionUserId(null);
+      return;
+    }
+    let mounted = true;
+    let observed = false;
+    const change = (id: string | null) => {
+      if (!mounted || !boundary.change(id)) return;
+      setReportState(null);
+      setWorkspaceRole(null);
+      setDownloading(false);
+      setSessionUserId(id);
+    };
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        observed = true;
+        change(session?.user.id ?? null);
+      },
+    );
+    void supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!observed) change(error ? null : (data.session?.user.id ?? null));
+      })
+      .catch(() => {
+        if (!observed) change(null);
+      });
+    return () => {
+      mounted = false;
+      boundary.change(null);
+      listener.subscription.unsubscribe();
+    };
+  }, [boundary, supabase]);
+
+  useEffect(() => {
+    const ticket = boundary.ticket();
+    let cancelled = false;
+    const current = () => !cancelled && boundary.current(ticket);
+    const setData = (value: ReportData) => {
+      if (current() && sessionUserId)
+        setReportState({ owner: sessionUserId, value });
+    };
     async function load() {
+      if (sessionUserId === undefined) return;
+      setReportState(null);
+      setLoading(true);
+      setError('');
       setWorkspaceRole(null);
       if (!supabase) {
         setError('보고서를 불러올 수 없습니다. 관리자에게 문의해 주세요.');
         setLoading(false);
         return;
       }
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      if (!sessionUserId) {
         setError('보고서를 보려면 먼저 로그인해 주세요.');
         setLoading(false);
         return;
       }
-      // Read the current server-managed membership, never user-editable metadata.
-      // A failed/removed/incomplete account falls back to login, not the admin route.
-      const accountResult = await supabase.rpc('get_my_account_state');
-      if (!accountResult.error) {
-        try {
-          const account = parseAccountState(accountResult.data);
-          if (
-            account.organizationId &&
-            !account.accessRemoved &&
-            !account.needsInitialPassword
-          ) {
-            const member = await supabase
-              .from('organization_members')
-              .select('role')
-              .eq('organization_id', account.organizationId)
-              .eq('user_id', sessionData.session.user.id)
-              .eq('status', 'active')
-              .maybeSingle();
-            if (!member.error && member.data && portalForRole(member.data.role))
-              setWorkspaceRole(member.data.role);
-          }
-        } catch {
-          /* Keep the safe login fallback if the account response is invalid. */
-        }
-      }
       try {
+        // Read the current server-managed membership, never user-editable metadata.
+        // A failed/removed/incomplete account falls back to login, not the admin route.
+        const accountResult = await supabase.rpc('get_my_account_state');
+        if (!accountResult.error) {
+          try {
+            const account = parseAccountState(accountResult.data);
+            if (
+              account.organizationId &&
+              !account.accessRemoved &&
+              !account.needsInitialPassword
+            ) {
+              const member = await supabase
+                .from('organization_members')
+                .select('role')
+                .eq('organization_id', account.organizationId)
+                .eq('user_id', sessionUserId)
+                .eq('status', 'active')
+                .maybeSingle();
+              if (
+                current() &&
+                !member.error &&
+                member.data &&
+                portalForRole(member.data.role)
+              )
+                setWorkspaceRole(member.data.role);
+            }
+          } catch {
+            /* Keep the safe login fallback if the account response is invalid. */
+          }
+        }
+        if (!current()) return;
         const { data: report, error: reportError } = await supabase
           .from('reports')
           .select('*')
@@ -234,17 +299,21 @@ export function LiveReport({ reportId }: { reportId: string }) {
           snapshot: null,
         });
       } catch (reason) {
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : '보고서를 불러올 수 없습니다.',
-        );
+        if (current())
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : '보고서를 불러올 수 없습니다.',
+          );
       } finally {
-        setLoading(false);
+        if (current()) setLoading(false);
       }
     }
     void load();
-  }, [reportId, supabase]);
+    return () => {
+      cancelled = true;
+    };
+  }, [boundary, reportId, sessionUserId, supabase]);
 
   if (loading) {
     return (
@@ -305,7 +374,12 @@ export function LiveReport({ reportId }: { reportId: string }) {
             {downloading ? '다운로드 중…' : '보관 PDF 다운로드'}
           </Button>
         )}
-        <Button variant="outline" onClick={() => window.print()}>
+        <Button
+          variant="outline"
+          onClick={() => {
+            if (boundary.current(boundary.ticket())) window.print();
+          }}
+        >
           <Printer />
           인쇄·PDF 저장
         </Button>

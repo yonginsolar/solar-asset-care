@@ -57,8 +57,8 @@ try {
   assert.equal(initialState.super_admin_user_id, a.id); pass('first active administrator gets the single protected assignment');
   const removeA = () => b.client.rpc('admin_remove_member', { p_organization_id: org.id, p_user_id: a.id, p_expected_updated_at: aRow.updated_at });
   await rejected(removeA(), /최고 관리자/, 'ordinary administrator cannot remove the super administrator');
-  await rejected(b.client.rpc('admin_update_member', { p_organization_id: org.id, p_user_id: a.id, p_role: 'client', p_status: 'active' }), /최고 관리자/, 'ordinary administrator cannot demote the super administrator');
-  await rejected(b.client.rpc('admin_update_member', { p_organization_id: org.id, p_user_id: a.id, p_role: 'owner', p_status: 'suspended' }), /최고 관리자/, 'ordinary administrator cannot suspend the super administrator');
+  await rejected(b.client.rpc('admin_update_member', { p_organization_id: org.id, p_user_id: a.id, p_role: 'client', p_status: null, p_expected_updated_at: aRow.updated_at }), /최고 관리자/, 'ordinary administrator cannot demote the super administrator');
+  await rejected(b.client.rpc('admin_update_member', { p_organization_id: org.id, p_user_id: a.id, p_role: null, p_status: 'suspended', p_expected_updated_at: aRow.updated_at }), /최고 관리자/, 'ordinary administrator cannot suspend the super administrator');
   const transfer = (actor, target = b, version = bRow.updated_at, expected = a.id) => actor.client.rpc('transfer_super_admin', {
     p_organization_id: org.id, p_target_user_id: target.id,
     p_expected_super_admin_user_id: expected, p_expected_target_updated_at: version,

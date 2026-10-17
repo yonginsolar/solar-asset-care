@@ -88,6 +88,7 @@ import { AccountProfile } from './live-profile';
 import { InspectionScheduleEditor } from './live-inspection-schedule';
 import { quoteSelectionLock } from '@/lib/quote-selection';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { collectPagedRows, collectionRowKey } from '@/lib/paged-rows';
 import { useGuardedAction } from '@/lib/use-guarded-action';
 import { analyzePixels } from '@/lib/relative-analysis';
 import { verifyOriginal } from '@/lib/original-integrity';
@@ -1395,14 +1396,25 @@ function AdminConsole({
         }
         const scoped = <T,>(
           collection: WorkspaceCollection,
-          request: PromiseLike<{ data: T | null; error: unknown }> & {
-            abortSignal: (
-              signal: AbortSignal,
-            ) => PromiseLike<{ data: T | null; error: unknown }>;
+          request: (count: 'exact' | undefined) => PromiseLike<{
+            data: T[] | null;
+            error: unknown;
+            count: number | null;
+          }> & {
+            abortSignal(signal: AbortSignal): ReturnType<typeof request>;
+            range(from: number, to: number): ReturnType<typeof request>;
+            order(column: string): ReturnType<typeof request>;
           },
         ) =>
           needed.includes(collection)
-            ? request.abortSignal(controller.signal)
+            ? collectPagedRows(
+                (from, to) =>
+                  request(from === 0 ? 'exact' : undefined)
+                    .range(from, to)
+                    .abortSignal(controller.signal),
+                controller.signal,
+                collectionRowKey,
+              )
             : Promise.resolve({ data: null, error: null });
         const [
           plantResult,
@@ -1419,105 +1431,109 @@ function AdminConsole({
           plantRequesterResult,
           memberResult,
         ] = await Promise.all([
-          scoped(
-            'plants',
+          scoped('plants', (count) =>
             supabase
               .from('plants')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('name'),
+              .order('name')
+              .order('id'),
           ),
-          scoped(
-            'inspections',
+          scoped('inspections', (count) =>
             supabase
               .from('inspections')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'inspection_files',
+          scoped('inspection_files', (count) =>
             supabase
               .from('inspection_files')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'analysis_runs',
+          scoped('analysis_runs', (count) =>
             supabase
               .from('analysis_runs')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('requested_at', { ascending: false }),
+              .order('requested_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'findings',
+          scoped('findings', (count) =>
             supabase
               .from('findings')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'reports',
+          scoped('reports', (count) =>
             supabase
               .from('reports')
-              .select('*,report_snapshots(sha256)')
+              .select('*,report_snapshots(sha256)', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'maintenance_requests',
+          scoped('maintenance_requests', (count) =>
             supabase
               .from('maintenance_requests')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'partners',
+          scoped('partners', (count) =>
             supabase
               .from('partners')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('name'),
+              .order('name')
+              .order('id'),
           ),
-          scoped(
-            'partner_private_details',
+          scoped('partner_private_details', (count) =>
             supabase
               .from('partner_private_details')
-              .select('*')
-              .order('created_at'),
+              .select('*', { count })
+              .order('created_at')
+              .order('partner_id'),
           ),
-          scoped(
-            'quote_requests',
+          scoped('quote_requests', (count) =>
             supabase
               .from('quote_requests')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'partner_quotes',
+          scoped('partner_quotes', (count) =>
             supabase
               .from('partner_quotes')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
-              .order('created_at', { ascending: false }),
+              .order('created_at', { ascending: false })
+              .order('id'),
           ),
-          scoped(
-            'plant_requesters',
-            supabase.from('plant_requesters').select('*').order('created_at'),
+          scoped('plant_requesters', (count) =>
+            supabase
+              .from('plant_requesters')
+              .select('*', { count })
+              .order('created_at')
+              .order('plant_id')
+              .order('requester_user_id'),
           ),
-          scoped(
-            'organization_members',
+          scoped('organization_members', (count) =>
             supabase
               .from('organization_members')
-              .select('*')
+              .select('*', { count })
               .eq('organization_id', organizationId)
               .neq('status', 'removed')
-              .order('created_at'),
+              .order('created_at')
+              .order('user_id'),
           ),
         ]);
         if (!current()) return;
@@ -1541,16 +1557,29 @@ function AdminConsole({
         const nextMembers = (memberResult.data ?? []) as Membership[];
         let nextProfiles: Record<string, Profile> = {};
         if (nextMembers.length) {
-          const { data: profileRows, error } = await supabase
-            .from('profiles')
-            .select('*')
-            .in(
-              'user_id',
-              nextMembers.map((member) => member.user_id),
-            )
-            .abortSignal(controller.signal);
-          if (!current()) return;
-          if (error) throw error;
+          const profileRows: Profile[] = [];
+          for (let at = 0; at < nextMembers.length; at += 200) {
+            const { data: batch, error } = await collectPagedRows(
+              (from, to) =>
+                supabase
+                  .from('profiles')
+                  .select('*', { count: 'exact' })
+                  .in(
+                    'user_id',
+                    nextMembers
+                      .slice(at, at + 200)
+                      .map((member) => member.user_id),
+                  )
+                  .order('user_id')
+                  .range(from, to)
+                  .abortSignal(controller.signal),
+              controller.signal,
+              collectionRowKey,
+            );
+            if (!current()) return;
+            if (error) throw error;
+            profileRows.push(...batch);
+          }
           nextProfiles = Object.fromEntries(
             (profileRows ?? []).map((profile) => [profile.user_id, profile]),
           );
@@ -2402,6 +2431,20 @@ function PlantsView(
   const [dataUseConsent, setDataUseConsent] = useState(false);
   const [requesterId, setRequesterId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [plantSearch, setPlantSearch] = useState('');
+  const [plantPage, setPlantPage] = useState(0);
+  const matchingPlants = props.plants.filter((plant) =>
+    [plant.name, plant.code, plant.address].some((value) =>
+      value
+        ?.toLocaleLowerCase()
+        .includes(plantSearch.trim().toLocaleLowerCase()),
+    ),
+  );
+  const pageIndex = Math.min(
+    plantPage,
+    Math.max(0, Math.ceil(matchingPlants.length / 50) - 1),
+  );
+  const pagePlants = matchingPlants.slice(pageIndex * 50, pageIndex * 50 + 50);
   const draft = JSON.stringify([
     name,
     code,
@@ -2497,6 +2540,7 @@ function PlantsView(
               p_inverter_model: inverterModel.trim(),
             })
           : await props.supabase.rpc('create_requester_plant_with_details', {
+              p_request_id: registrationId.current,
               p_name: name.trim(),
               p_address: address.trim(),
               p_capacity_kw: capacity ? Number(capacity) : null,
@@ -2736,9 +2780,19 @@ function PlantsView(
         <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
           <div className="border-b px-5 py-4">
             <h2 className="font-bold">등록 자산 {props.plants.length}곳</h2>
+            <Input
+              className="mt-3"
+              aria-label="발전소 검색"
+              placeholder="발전소명·코드·주소 검색"
+              value={plantSearch}
+              onChange={(event) => {
+                setPlantSearch(event.target.value);
+                setPlantPage(0);
+              }}
+            />
           </div>
           <div className="divide-y">
-            {props.plants.map((plant) => (
+            {pagePlants.map((plant) => (
               <div
                 key={plant.id}
                 className="flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center"
@@ -2787,11 +2841,37 @@ function PlantsView(
                 )}
               </div>
             ))}
-            {props.plants.length === 0 && (
+            {matchingPlants.length === 0 && (
               <p className="px-5 py-16 text-center text-sm text-slate-400">
-                등록된 발전소가 없습니다.
+                {props.plants.length
+                  ? '검색 결과가 없습니다.'
+                  : '등록된 발전소가 없습니다.'}
               </p>
             )}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t p-4 text-sm">
+            <span>
+              {matchingPlants.length}곳 · {pageIndex + 1} /{' '}
+              {Math.max(1, Math.ceil(matchingPlants.length / 50))}페이지
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy || pageIndex === 0}
+                onClick={() => setPlantPage(pageIndex - 1)}
+              >
+                이전
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy || (pageIndex + 1) * 50 >= matchingPlants.length}
+                onClick={() => setPlantPage(pageIndex + 1)}
+              >
+                다음
+              </Button>
+            </div>
           </div>
         </section>
       </div>
@@ -2906,6 +2986,7 @@ function InspectionsView(
     busy || rowBusy,
   );
   const createLock = useRef(false);
+  const intakeRequestId = useRef(crypto.randomUUID());
 
   async function create(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2916,6 +2997,7 @@ function InspectionsView(
     try {
       const { error } = props.requesterMode
         ? await props.supabase.rpc('request_inspection', {
+            p_request_id: intakeRequestId.current,
             p_plant_id: effectivePlantId,
             p_purpose: purpose.trim(),
             p_notes: notes.trim(),
@@ -2937,6 +3019,7 @@ function InspectionsView(
           });
       if (error) throw error;
       props.setNotice({ tone: 'success', text: '점검을 접수했습니다.' });
+      intakeRequestId.current = crypto.randomUUID();
       const nextCode = `INS-${Date.now().toString().slice(-8)}`;
       baseline.current = JSON.stringify([
         effectivePlantId,
@@ -5922,6 +6005,15 @@ function MembersView(
   const actionInFlight = useRef(false);
   const superAdminUserId = props.workspace.superAdminUserId;
   const isSuperAdmin = superAdminUserId === props.session.user.id;
+  const invitationDraft = JSON.stringify([email, displayName, role]);
+  const invitationBaseline = useRef(invitationDraft);
+  const organizationBaseline = useRef(organizationName);
+  useDraftProtection(
+    props.canWrite &&
+      (invitationDraft !== invitationBaseline.current ||
+        organizationName !== organizationBaseline.current),
+    busy || Boolean(busyMemberId),
+  );
 
   async function confirmMemberAction() {
     if (!pendingAction || !props.canWrite || actionInFlight.current) return;
@@ -5970,6 +6062,8 @@ function MembersView(
   }
   async function addMember(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!props.canWrite || actionInFlight.current) return;
+    actionInFlight.current = true;
     setBusy(true);
     try {
       const { data, error } = await props.supabase.functions.invoke(
@@ -5991,12 +6085,14 @@ function MembersView(
           ? `${email.trim()} 주소로 ${roleLabels[role]} 초대 메일을 보냈습니다.`
           : '이미 가입된 계정에 권한을 바로 연결했습니다.',
       });
+      invitationBaseline.current = JSON.stringify(['', '', role]);
       setEmail('');
       setDisplayName('');
       await props.refresh();
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      actionInFlight.current = false;
       setBusy(false);
     }
   }
@@ -6004,14 +6100,17 @@ function MembersView(
     member: Membership,
     updates: { role?: string; status?: string },
   ) {
+    if (!props.canWrite || actionInFlight.current) return;
+    actionInFlight.current = true;
     setBusyMemberId(member.user_id);
     props.setNotice(null);
     try {
       const { error } = await props.supabase.rpc('admin_update_member', {
         p_organization_id: props.organizationId,
         p_user_id: member.user_id,
-        p_role: updates.role ?? member.role,
-        p_status: updates.status ?? member.status,
+        p_role: updates.role ?? null,
+        p_status: updates.status ?? null,
+        p_expected_updated_at: member.updated_at,
       });
       if (error) throw error;
       props.setNotice({
@@ -6022,21 +6121,33 @@ function MembersView(
     } catch (error) {
       props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
+      actionInFlight.current = false;
       setBusyMemberId(null);
     }
   }
   async function saveOrganization(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    const { data, error } = await props.supabase
-      .from('organizations')
-      .update({ name: organizationName.trim() })
-      .eq('id', props.organizationId)
-      .select('*')
-      .single();
-    if (error) props.setNotice({ tone: 'error', text: errorMessage(error) });
-    else {
-      props.setWorkspace({ ...props.workspace, organization: data });
-      props.setNotice({ tone: 'success', text: '조직명을 변경했습니다.' });
+    if (!props.canWrite || actionInFlight.current) return;
+    actionInFlight.current = true;
+    setBusy(true);
+    try {
+      const { data, error } = await props.supabase
+        .from('organizations')
+        .update({ name: organizationName.trim() })
+        .eq('id', props.organizationId)
+        .select('*')
+        .single();
+      if (error) throw error;
+      else {
+        organizationBaseline.current = organizationName;
+        props.setWorkspace({ ...props.workspace, organization: data });
+        props.setNotice({ tone: 'success', text: '조직명을 변경했습니다.' });
+      }
+    } catch (error) {
+      props.setNotice({ tone: 'error', text: errorMessage(error) });
+    } finally {
+      actionInFlight.current = false;
+      setBusy(false);
     }
   }
   return (
@@ -6093,69 +6204,81 @@ function MembersView(
             className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <h2 className="font-bold">전문가·관리자 초대</h2>
-            {!props.canWrite && <ReadOnlyNote />}
-            <p className="rounded-xl bg-sky-50 p-3 text-xs leading-5 text-sky-800">
-              초대받은 사용자가 메일의 링크를 열고 비밀번호를 설정하면 이용할 수
-              있습니다. 의뢰인은 로그인 화면에서 직접 가입합니다.
-            </p>
-            <Field label="이름">
-              <Input
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                disabled={!props.canWrite}
-                maxLength={100}
-              />
-            </Field>
-            <Field label="초대 이메일">
-              <Input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={!props.canWrite}
-                required
-              />
-            </Field>
-            <Field label="역할">
-              <select
-                className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
-                value={role}
-                onChange={(e) => setRole(e.target.value as 'expert' | 'owner')}
-                disabled={!props.canWrite}
-              >
-                <option value="expert">전문가</option>
-                <option value="owner">관리자</option>
-              </select>
-            </Field>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={!props.canWrite || busy}
+            <fieldset
+              disabled={busy || Boolean(busyMemberId)}
+              className="space-y-4"
             >
-              {busy ? <Loader2 className="animate-spin" /> : <Users />}초대 메일
-              보내기
-            </Button>
+              {!props.canWrite && <ReadOnlyNote />}
+              <p className="rounded-xl bg-sky-50 p-3 text-xs leading-5 text-sky-800">
+                초대받은 사용자가 메일의 링크를 열고 비밀번호를 설정하면 이용할
+                수 있습니다. 의뢰인은 로그인 화면에서 직접 가입합니다.
+              </p>
+              <Field label="이름">
+                <Input
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  disabled={!props.canWrite}
+                  maxLength={100}
+                />
+              </Field>
+              <Field label="초대 이메일">
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={!props.canWrite}
+                  required
+                />
+              </Field>
+              <Field label="역할">
+                <select
+                  className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={role}
+                  onChange={(e) =>
+                    setRole(e.target.value as 'expert' | 'owner')
+                  }
+                  disabled={!props.canWrite}
+                >
+                  <option value="expert">전문가</option>
+                  <option value="owner">관리자</option>
+                </select>
+              </Field>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={!props.canWrite || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" /> : <Users />}초대
+                메일 보내기
+              </Button>
+            </fieldset>
           </form>
           <form
             onSubmit={saveOrganization}
             className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <h2 className="font-bold">조직 설정</h2>
-            <Field label="조직명">
-              <Input
-                value={organizationName}
-                onChange={(e) => setOrganizationName(e.target.value)}
-                disabled={!props.canWrite}
-                required
-              />
-            </Field>
-            <Button
-              type="submit"
-              variant="outline"
-              className="w-full"
-              disabled={!props.canWrite}
+            <fieldset
+              disabled={busy || Boolean(busyMemberId)}
+              className="space-y-4"
             >
-              조직명 저장
-            </Button>
+              <Field label="조직명">
+                <Input
+                  value={organizationName}
+                  onChange={(e) => setOrganizationName(e.target.value)}
+                  disabled={!props.canWrite}
+                  required
+                />
+              </Field>
+              <Button
+                type="submit"
+                variant="outline"
+                className="w-full"
+                disabled={!props.canWrite}
+              >
+                조직명 저장
+              </Button>
+            </fieldset>
           </form>
         </div>
         <section className="order-first min-w-0 overflow-hidden rounded-2xl border bg-white shadow-sm xl:order-last">
