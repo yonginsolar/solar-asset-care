@@ -103,6 +103,10 @@ import { draftNavigationState } from '@/lib/draft-navigation';
 import { useWorkspaceLocation } from '@/lib/use-workspace-location';
 import { roleViews, type WorkspaceView } from '@/lib/workspace-navigation';
 import {
+  inspectionShortcut,
+  workflowEmptyState,
+} from '@/lib/workflow-guidance';
+import {
   InspectionSelectionProvider,
   useInspectionSelection,
   resolveInspectionSelection,
@@ -1260,31 +1264,10 @@ function AdminConsole({
     | 'home'
     | 'refresh'
     | 'logout'
+    | { openInspectionId: string }
     | `inspection:${string}`;
   const [pendingNavigation, setPendingNavigation] =
     useState<Destination | null>(null);
-  const performNavigation = (next: Destination) => {
-    setNotice(null);
-    if (next === 'refresh') void refresh(true);
-    else if (next === 'home') router.push('/');
-    else if (next === 'logout') void supabase.auth.signOut();
-    else if (next.startsWith('inspection:'))
-      navigation.go({ view, inspectionId: next.slice(11) });
-    else
-      navigation.go({ view: next as View, inspectionId: selectedInspection });
-  };
-  const requestNavigation = (next: Destination) => {
-    if (next === view) return;
-    const state = draftNavigationState(window);
-    if (state === 'busy') {
-      setNotice({
-        tone: 'info',
-        text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.',
-      });
-    } else if (state === 'dirty') setPendingNavigation(next);
-    else performNavigation(next);
-  };
-  const changeView = (next: View) => requestNavigation(next);
   const [plants, setPlants] = useState<Plant[]>([]);
   const [inspections, setInspections] = useState<Inspection[]>([]);
   const [files, setFiles] = useState<InspectionFile[]>([]);
@@ -1617,6 +1600,45 @@ function AdminConsole({
     [organizationId, supabase, view, role, isOwner],
   );
 
+  const performNavigation = (next: Destination) => {
+    setNotice(null);
+    if (typeof next === 'object') {
+      // Re-resolve after a discard confirmation against the current authorized rows.
+      const target = inspectionShortcut(
+        role,
+        next.openInspectionId,
+        inspections,
+        reports,
+      );
+      if (target) navigation.go(target);
+      else
+        setNotice({
+          tone: 'info',
+          text: '현재 목록에서 이 점검을 확인할 수 없습니다. 다시 불러온 뒤 확인해 주세요.',
+        });
+    } else if (next === 'refresh') void refresh(true);
+    else if (next === 'home') router.push('/');
+    else if (next === 'logout') void supabase.auth.signOut();
+    else if (next.startsWith('inspection:'))
+      navigation.go({ view, inspectionId: next.slice(11) });
+    else
+      navigation.go({ view: next as View, inspectionId: selectedInspection });
+  };
+  const requestNavigation = (next: Destination) => {
+    if (next === view) return;
+    const state = draftNavigationState(window);
+    if (state === 'busy') {
+      setNotice({
+        tone: 'info',
+        text: '저장 결과를 확인하는 중입니다. 완료 후 이동해 주세요.',
+      });
+    } else if (state === 'dirty') setPendingNavigation(next);
+    else performNavigation(next);
+  };
+  const changeView = (next: View) => requestNavigation(next);
+  const openInspection = (id: string) =>
+    requestNavigation({ openInspectionId: id });
+
   useEffect(() => {
     if (!navigation.ready) return;
     const read = readRequest.current;
@@ -1921,7 +1943,12 @@ function AdminConsole({
                   </>
                 )}
                 {view === 'dashboard' && (
-                  <DashboardView {...shared} setView={changeView} role={role} />
+                  <DashboardView
+                    {...shared}
+                    setView={changeView}
+                    role={role}
+                    onOpenInspection={openInspection}
+                  />
                 )}
                 {view === 'plants' && (
                   <PlantsView
@@ -1937,6 +1964,7 @@ function AdminConsole({
                     canUpdate={canUpdateInspection}
                     requesterMode={isRequester}
                     expertMode={isExpert}
+                    onOpenInspection={openInspection}
                   />
                 )}
                 {view === 'files' && (
@@ -2133,7 +2161,11 @@ function MetricCard({
 }
 
 function DashboardView(
-  props: SharedProps & { setView: (view: View) => void; role: string },
+  props: SharedProps & {
+    setView: (view: View) => void;
+    role: string;
+    onOpenInspection: (id: string) => void;
+  },
 ) {
   const activeInspections = props.inspections.filter(
     (item) => !['closed', 'cancelled'].includes(item.status),
@@ -2255,7 +2287,7 @@ function DashboardView(
               {props.inspections.slice(0, 6).map((inspection) => (
                 <div
                   key={inspection.id}
-                  className="flex items-center justify-between gap-4 py-4"
+                  className="flex flex-col justify-between gap-3 py-4 sm:flex-row sm:items-center"
                 >
                   <div className="min-w-0">
                     <strong className="block truncate text-sm">
@@ -2308,9 +2340,21 @@ function DashboardView(
                       </div>
                     )}
                   </div>
-                  <StatusPill>
-                    {statusLabel(inspection.status, inspectionStatuses)}
-                  </StatusPill>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <StatusPill>
+                      {statusLabel(inspection.status, inspectionStatuses)}
+                    </StatusPill>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="min-h-11"
+                      aria-label={`${inspection.inspection_code} 점검 열기`}
+                      onClick={() => props.onOpenInspection(inspection.id)}
+                    >
+                      점검 열기 <ArrowRight />
+                    </Button>
+                  </div>
                 </div>
               ))}
               {props.inspections.length === 0 && (
@@ -2372,12 +2416,14 @@ function EmptyState({
   copy,
   action,
   onAction,
+  actionIcon: ActionIcon = Plus,
 }: {
   icon: typeof Building2;
   title: string;
   copy: string;
   action?: string;
   onAction?: () => void;
+  actionIcon?: typeof Plus;
 }) {
   return (
     <div className="mt-6 rounded-2xl border border-dashed bg-white px-6 py-14 text-center">
@@ -2387,8 +2433,8 @@ function EmptyState({
         {copy}
       </p>
       {action && onAction && (
-        <Button className="mt-5" onClick={onAction}>
-          <Plus /> {action}
+        <Button type="button" className="mt-5" onClick={onAction}>
+          <ActionIcon /> {action}
         </Button>
       )}
     </div>
@@ -2931,6 +2977,7 @@ function InspectionsView(
     canUpdate: boolean;
     requesterMode: boolean;
     expertMode: boolean;
+    onOpenInspection: (id: string) => void;
   },
 ) {
   const [plantId, setPlantId] = useState('');
@@ -3307,6 +3354,17 @@ function InspectionsView(
                         {statusLabel(inspection.status, inspectionStatuses)}
                       </StatusPill>
                     )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="min-h-11"
+                      aria-label={`${inspection.inspection_code} 점검 열기`}
+                      disabled={busy || rowBusy}
+                      onClick={() => props.onOpenInspection(inspection.id)}
+                    >
+                      점검 열기 <ArrowRight />
+                    </Button>
                   </div>
                 </div>
                 {props.canUpdate &&
@@ -4118,6 +4176,12 @@ function ReportsView(
     effectiveInspectionId,
     showAll,
   );
+  const emptyState = workflowEmptyState('reports', {
+    canWrite: props.canCreate,
+    hasInspections: props.inspections.length > 0,
+    hasOtherRows: props.reports.length > visibleReports.length,
+    locked,
+  });
   const operationLock = useRef(false);
   const pending = busy || transitioningId !== null;
   useDraftProtection(
@@ -4478,8 +4542,9 @@ function ReportsView(
           {visibleReports.length === 0 && (
             <EmptyState
               icon={FileText}
-              title="작성된 보고서가 없습니다"
-              copy="완료할 점검을 선택하고 첫 초안을 만들어 보세요."
+              {...emptyState}
+              actionIcon={ArrowRight}
+              onAction={() => setShowAll(true)}
             />
           )}
         </section>
@@ -4503,6 +4568,11 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
     effectiveInspectionId,
     showAll,
   );
+  const emptyState = workflowEmptyState('maintenance', {
+    canWrite: props.canWrite,
+    hasInspections: props.inspections.length > 0,
+    hasOtherRows: props.maintenance.length > visibleMaintenance.length,
+  });
   const lock = useRef(false);
   useDraftProtection(
     title !== '열화상 이상 후보 현장 점검' ||
@@ -4579,7 +4649,11 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
       <PageHeading
         eyebrow="MAINTENANCE LOOP"
         title="유지보수 요청·조치 이력"
-        copy="후속 조치를 등록하고 진행 상태를 관리합니다. 연결된 견적에서 업체를 선택하면 이 작업의 업체 정보에도 반영됩니다."
+        copy={
+          props.canWrite
+            ? '후속 조치를 등록하고 진행 상태를 관리합니다. 연결된 견적에서 업체를 선택하면 이 작업의 업체 정보에도 반영됩니다.'
+            : '등록된 후속 조치의 진행 상황을 확인합니다. 견적에서 선택된 업체 정보도 함께 표시됩니다.'
+        }
       />
       <div
         className={`grid gap-5 ${props.canWrite ? 'xl:grid-cols-[380px_1fr]' : ''}`}
@@ -4720,8 +4794,9 @@ function MaintenanceView(props: SharedProps & { canWrite: boolean }) {
           {visibleMaintenance.length === 0 && (
             <EmptyState
               icon={Wrench}
-              title="등록된 조치가 없습니다"
-              copy="판정이 끝난 점검에서 필요한 현장 조치를 등록하세요."
+              {...emptyState}
+              actionIcon={ArrowRight}
+              onAction={() => setShowAll(true)}
             />
           )}
         </section>

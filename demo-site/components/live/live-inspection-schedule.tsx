@@ -4,6 +4,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Tables } from '@/lib/supabase/database.types';
 import { parseKoreanInput, toKoreanInput } from '@/lib/operational-assessment';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useGuardedAction } from '@/lib/use-guarded-action';
+import { DraftChangeDialog } from './draft-change-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -34,6 +36,9 @@ export function InspectionScheduleEditor({
   const lock = useRef(false);
   const dirty = scheduledAt !== start || dueAt !== end;
   useDraftProtection(dirty, busy);
+  const close = useGuardedAction(() =>
+    busy || lock.current ? 'busy' : dirty ? 'dirty' : 'clean',
+  );
   async function save(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     if (lock.current || !dirty) return;
@@ -83,6 +88,7 @@ export function InspectionScheduleEditor({
       className="mt-4 min-w-0 space-y-3 rounded-xl border bg-slate-50 p-4"
       aria-label={`${inspection.inspection_code} 일정 수정`}
     >
+      <DraftChangeDialog guard={close} />
       <p className="text-sm font-bold">점검 일정 수정 · 한국시간</p>
       {error && (
         <p role="alert" className="text-sm text-red-700">
@@ -120,7 +126,7 @@ export function InspectionScheduleEditor({
           type="button"
           variant="outline"
           disabled={busy}
-          onClick={onClose}
+          onClick={() => close.request(onClose)}
         >
           수정 취소
         </Button>
