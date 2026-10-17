@@ -15,6 +15,8 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
 const localBindingConfig = {
   main: 'vinext/server/fetch-handler',
   compatibility_flags: ['nodejs_compat'],
+  // Preserve the previous build policy after the plugin's source-map default changed.
+  upload_source_maps: false,
   d1_databases: d1
     ? [
         {

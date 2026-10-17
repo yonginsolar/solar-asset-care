@@ -1,0 +1,118 @@
+개발도구 보안 업데이트·검증 기록
+확인일: 2026-10-17 KST
+대상: solar-asset-care / demo-site
+요청: 필요한 보안 업데이트만 적용하고 기존 기능·권한을 유지한 뒤 재시험
+
+1. 적용 범위
+
+직접 의존성은 아래 개발도구 네 항목만 바꿨다.
+- @cloudflare/vite-plugin: 1.54.3 → 1.64.0
+- wrangler: 4.128.0 → 4.151.1
+- @cloudflare/workers-types: 5.20260902.1 → 5.20261006.1
+  새 Wrangler의 필수 호환 범위에 맞춘 최소 타입 버전이다.
+- oxfmt: 0.61.0 → 0.67.0
+  tinypool 2.1.2 수정본을 포함하는 첫 수정 구간을 선택했다.
+
+잠금 파일의 보안 관련 하위 의존성은 기존 상위 패키지 허용 범위로 갱신했다.
+- tinypool 2.1.2, proxy-addr 2.0.8, sharp 0.35.5, undici 7.29.1
+- @modelcontextprotocol/sdk 1.32.1, brace-expansion 5.0.12
+- fast-uri 3.1.8, hono 4.13.13, ip-address 10.7.4
+- postcss-selector-parser 7.1.6, source-map-js 1.2.2
+- Cloudflare 도구가 요구하는 workerd/Miniflare/esbuild 및 플랫폼별 바이너리도 함께 갱신된다.
+
+정확한 직접 버전과 package-lock.json을 함께 관리한다. npm audit fix --force,
+legacy-peer-deps, 무차별 최신화, 임의 소스 패치나 경고 예외 설정은 사용하지 않았다.
+첫 잠금 파일 갱신은 Workers 타입 peer 범위 충돌로 거부됐다. 타입 버전을 맞춘 뒤
+정상 해결했으며 의존성 검사를 우회하지 않았다.
+
+Cloudflare 1.64.0의 Worker 소스맵 기본 생성 변경은 upload_source_maps:false로
+명시적으로 껐다. 생성된 dist에 .map 파일이 없고 추가 외부 업로드도 켜지 않았다.
+React 19.2.8 계열, Vinext 1.0.0-beta.8, Supabase JS 2.113.0은 그대로다.
+shadcn CLI 4.18.0도 유지했다. 보안 하위 패키지를 허용 범위에서 갱신할 수 있으므로
+CLI의 Zod 4 전환까지 포함하는 불필요한 직접 업그레이드는 하지 않았다.
+
+2. 보안 감사 결과와 남은 항목
+
+업데이트 전 npm audit: 총 24개 의존성 경고(critical 3 / high 18 / moderate 3).
+업데이트 후 npm audit: 총 9개 의존성 경고(critical 0 / high 9 / moderate 0).
+이는 경고 패키지 수이며 서로 독립적인 취약점 24개 또는 9개를 뜻하지 않는다.
+
+남은 직접 advisory는 GHSA-vfj7-8cjw-p6xm 하나다. braces <=3.0.3의 깊게 중첩된
+glob 패턴 처리 중 스택 소진 문제이며 2026-10-17 공식 수정본이 없다.
+braces → micromatch → fast-glob가 shadcn/ts-morph와 Vinext의 CommonJS 빌드
+플러그인 경로에 포함돼 npm이 상위 항목까지 총 9개 high로 표시한다.
+npm이 제안하는 shadcn 1.0.0 / Vinext 0.0.15 하향은 현재 기능의 호환 수리가 아니다.
+따라서 강제 하향하지 않고 미해결 항목으로 남겼다.
+
+확인한 경로는 소스 변환·파일 탐색용 개발도구 경로이며 앱의 요청 처리 코드에서
+glob 입력을 받거나 해당 패키지를 직접 호출하지 않는다. dist의 JS/MJS 124개,
+약 4.5MB에서 관련 패키지 경로 문자열도 발견되지 않았다. 문자열 검사만으로
+취약점 부재를 보증하지 않는다. 이는 공식 수정본 대기/노출 경로 검토 결과다.
+개발 서버를 외부에 공개하거나 신뢰하지 않는 프로젝트/패턴을 처리하지 않는다.
+공식 수정본이 나오면 현재 의존성 경로로 다시 검토한다. 반복 자동 감시는 만들지 않았다.
+
+3. 검증 결과
+
+- 공식 설치 helper의 npm ci: 메인 작업본과 깨끗한 Site 소스 checkout 모두 성공.
+- npm test: 147개 통과. 기존 144개와 정확 버전/잠금 파일 일치·수정 버전 하한·
+  기존 앱/인증 프레임워크 보존 검사 3개를 포함한다.
+- TypeScript --noEmit: 통과.
+- Site 빌드: 메인 작업본과 깨끗한 Site checkout 모두 통과.
+- 변경 파일 vite.config.ts / toolchain-security.test.mjs의 oxlint: 통과.
+- 전체 npm run lint: 실패, 기존 지적 72개 / 22개 파일. 해당 소스 파일은 모두
+  업데이트 전 HEAD와 바이트가 같고 oxlint 1.76.0도 그대로다. 기존 React hook/ref,
+  접근성, 사용하지 않는 변수 및 시험 스크립트 지적이다. 보안 업데이트 성공과
+  전체 lint 통과를 혼동하지 않으며 이번 범위에서 임의 업무 리팩터링하지 않았다.
+- verify-local-workflow.mjs: 전체 마이그레이션·권한·업무·수정판·동시성 5묶음 통과.
+  새 격리 PostgreSQL에서 수행하고 해당 임시 클러스터만 정리했다.
+- verify-admin-access.mjs: 실제 Auth 30개 통과, 가상 계정/조직 정리 완료.
+- verify-live-workflow.mjs: 로컬 178개 / v29 배포본 180개 통과.
+  관리자·배정 전문가·연결 고객·연결 없는 고객·다른 조직의 허용/차단, 7MB TUS
+  중단/재개·원본 체크섬·미리보기·분석·사진 승인·경제성 후속 입력·보고서 PDF
+  개정/발행/회수·업체 견적·인증서·초대/권한 경계를 재시험했다.
+- verify-guest.mjs: 로컬/배포 각각 31개 통과, 공개 샘플 PDF와 비공개 API 경계 확인.
+- 브라우저: 로컬 역할별 샘플 이동과 배포 후 기존 Minho 관리자 세션·메뉴·발전소
+  조회를 확인했다. 배포 관리자 화면 console error 0개. 실제 사용자 입력/저장 없음.
+- 설정 HMR 재시작 도중 첫 로컬 readiness 요청은 500이었다. 재시작 완료 후 200과
+  전체 로컬/배포 업무 시험을 확인했다. 정상 이용 실패로 재현되지는 않았다.
+- 물리 휴대전화·실제 열화상 정답지 정확도 검증은 이번 도구 업데이트 범위가 아니다.
+
+4. 보존/정리
+
+스키마·RLS·기존 계정/역할·최고관리자·메일 발신 설정·요금제·공개 범위를 바꾸지 않았다.
+실제 메일/알림·결제는 하지 않았다. 각 수용시험은 가상 사용자 5명과 조직 2곳을
+만든 후 정리했고 관리자 별도 시험 자료도 정리했다.
+시작/종료 수량: Auth 3 / 조직 1 / 발전소 1 / 점검 2 / 보고서 2 / Storage 객체 8.
+접수 재시도 journal 0개. 최고관리자 Minho 보호 유지.
+전체 organization_members 행의 비교 해시: b8718c77763c5c1612992752ac891065 (동일).
+기존 CHANGELOG의 2026-10-14 샘플 완료 기록 8줄은 사용자 변경으로 보존하고
+이번 보안 업데이트 커밋에는 포함하지 않는다. 무관한 ERP 프로젝트는 수정하지 않았다.
+
+5. 배포와 복귀
+
+공개 URL: https://solar-asset-care-demo.kimminho0914.chatgpt.site/
+기존 공개 audience / runtime env_set_revision 2 유지.
+Site v29 source: 747756294b4638bd612c008b096d8317409d872d
+version: appgprj_6a981be344a0819181e91aa8015c47c2~appgver_b2a06162ae008191a86f0287272bea0b
+deployment: appgdep_6ad2d86084348191a60ade00029a8267
+상태: succeeded, 2026-10-17T02:07:45.807884+00:00.
+패키지는 이 커밋에서 빌드한 archive와 함께 저장했다.
+사이트 증거 화면: demo-site/work/security-update-20261017/deployed-v29-admin.png (Git 제외).
+
+문제 발생 시 기존 v28 저장본으로 Site를 복귀할 수 있다.
+v28 version: appgprj_6a981be344a0819181e91aa8015c47c2~appgver_d168754682008191a002314c95a78f52
+v28 source: 357ab666a2b5c7c78b15b48fac9141cd3c7d782c.
+원복 시 다시 노출될 보안 경고가 있으므로 장기 해결로 취급하지 않는다.
+소스는 이번 의존성/설정/시험 커밋만 별도 revert하고 npm ci·빌드·회귀 검사한다.
+DB 변경이 없어 DB 복원/자료 삭제는 필요하지 않다. 사용자의 다른 변경을 초기화하지 않는다.
+
+6. 공식 확인 출처
+
+https://github.com/tinylibs/tinypool/security/advisories/GHSA-85c8-ppgw-ccpr
+https://github.com/oxc-project/oxc/releases/tag/oxfmt_v0.67.0
+https://github.com/cloudflare/workers-sdk/releases/tag/@cloudflare%2Fvite-plugin@1.64.0
+https://github.com/cloudflare/workers-sdk/releases/tag/wrangler@4.151.1
+https://github.com/advisories/GHSA-jqcg-44mw-7w3h
+https://github.com/advisories/GHSA-vfj7-8cjw-p6xm
+https://registry.npmjs.org/ (해당 정확 버전 manifest/무결성/peer 범위와 npm audit)
+https://supabase.com/changelog.md (관련 변경 확인; Supabase/인증 방식은 변경하지 않음)
