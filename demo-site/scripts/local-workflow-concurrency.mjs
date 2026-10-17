@@ -157,6 +157,42 @@ export async function checkConcurrency({ bin, env, sql }) {
     console.log(
       'PASS concurrent requester registration replay: one plant, one receipt, identical result ID',
     );
+    // Only the disposable local cluster: separate workers claim different rows
+    // even while the first transaction still holds its row lock.
+    sql('update private.workflow_email_settings set enabled=true;');
+    sql(
+      "update auth.users set email=replace(email,'example.invalid','local.fixture');",
+    );
+    const mailCase = seed('CONCURRENCY-MAIL');
+    const pending = Number(
+      sql(
+        "select count(*) from private.workflow_emails where inspection_id='" +
+          mailCase +
+          "';",
+      ).trim(),
+    );
+    assert.ok(pending >= 2, 'need two isolated eligible mail recipients');
+    const mailA = start(
+      "begin;set statement_timeout='2s';select 'MAIL:'||(public.claim_workflow_emails(1)->0->>'id');select 'MAIL_READY';\n",
+    );
+    await until(
+      () => mailA.out.includes('MAIL_READY'),
+      'first mail claim holds row lock',
+    );
+    const mailB = start(
+      "set statement_timeout='2s';select 'MAIL:'||(public.claim_workflow_emails(1)->0->>'id');\n",
+    );
+    mailB.process.stdin.end();
+    assert.equal(await mailB.done, 0, mailB.err);
+    const aId = mailA.out.match(/MAIL:([\w-]+)/)?.[1],
+      bId = mailB.out.match(/MAIL:([\w-]+)/)?.[1];
+    assert.ok(aId && bId);
+    assert.notEqual(aId, bId);
+    mailA.process.stdin.end('commit;\n');
+    assert.equal(await mailA.done, 0, mailA.err);
+    console.log(
+      'PASS concurrent mail claims: separate jobs with SKIP LOCKED, no duplicate or wait',
+    );
   } finally {
     for (const s of active) s.process.kill('SIGTERM');
     await Promise.all([...active].map((s) => s.done));

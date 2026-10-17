@@ -1,4 +1,7 @@
 export const auditActions: Record<string, string> = {
+  'email.accepted': '안내 메일 발송 접수',
+  'email.failed': '안내 메일 발송 실패',
+  'email.unknown': '안내 메일 발송 결과 확인 필요',
   'settings.save': '운영 설정 초안 저장',
   'settings.publish': '새 약관 적용',
   'customers.create': '고객 등록',

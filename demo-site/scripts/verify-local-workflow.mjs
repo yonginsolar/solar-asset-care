@@ -96,15 +96,29 @@ try {
     'utf8',
   );
   sql(
-    progressive.replace(
-      'rollback;',
-      readFileSync(join(root, 'supabase/tests/guarded_actions.sql'), 'utf8') +
-        '\n' +
-        workflow +
-        '\n' +
-        schedule +
-        '\nrollback;',
-    ),
+    progressive
+      .replace(
+        'begin;',
+        'begin;\nupdate private.workflow_email_settings set enabled=true;',
+      )
+      .replace(
+        'rollback;',
+        () =>
+          readFileSync(
+            join(root, 'supabase/tests/guarded_actions.sql'),
+            'utf8',
+          ) +
+          '\n' +
+          workflow +
+          '\n' +
+          schedule +
+          '\n' +
+          readFileSync(
+            join(root, 'supabase/tests/workflow_email.sql'),
+            'utf8',
+          ) +
+          '\nrollback;',
+      ),
   );
   checks++;
   sql(

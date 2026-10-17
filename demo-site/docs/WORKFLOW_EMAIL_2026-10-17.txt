@@ -1,0 +1,58 @@
+업무 단계 자동 메일 — 2026-10-17
+
+범위
+- 점검 접수: 연결된 활성 의뢰인(사업자 담당자 포함), 해당 작업공간 관리자.
+- 전문가 배정: 현재 담당 전문가와 연결된 활성 의뢰인. 최초 등록부터 배정된 경우 전문가는 배정 안내 한 통만 받음.
+- 보고서 발행: 연결된 활성 의뢰인. 초안/검토/승인에는 발송하지 않음.
+- Auth 이메일은 그대로 유지. SMS 공급자/발송/대체 발송은 추가하지 않음.
+- 고객 사진·보고서 본문·금융정보·연락처는 메일에 포함하지 않음. 인증이 필요한 화면 링크와 점검번호만 안내.
+
+구현
+- DB 트리거와 같은 트랜잭션의 private.workflow_emails outbox. 과거 자료를 소급 발송하지 않음.
+- 현재 활성 역할, 인증된 Auth 이메일, 초대 비밀번호 생성, 개인정보/정책 완료, 고객-발전소 연결을 서버에서 다시 검증.
+- 발송 전에 담당자 변경·보고서 회수·회원 정지·이메일 변경을 다시 확인. 연결 해제 후 기존 대기열도 차단.
+- 한 사용자씩 별도 메일. 브라우저가 수신자/본문을 지정하거나 일반 사용자 JWT로 발송 작업을 호출할 수 없음.
+- SKIP LOCKED + 일회성 claim 토큰. 동시 claim 시험에서 PL/pgSQL 커서의 과도한 선행 잠금을 발견하여 후속 마이그레이션으로 한 행씩 잠그도록 수정.
+- Resend Idempotency-Key는 outbox UUID 기준. accepted는 발송 공급자 접수이며 실제 수신함 도달을 뜻하지 않음.
+- 네트워크/5xx/409/비정상 응답/처리 중단은 unknown으로 남기고 자동 재발송하지 않음.
+- 명시적 429만 대기 후 최대 3회 시도. 23시간 지난 대기열은 만료하며 수동 재전송 기능을 무조건 열지 않음.
+- 실패·결과불명·공급자 접수는 기존 관리자 운영 이력에서 확인. 본문·이메일 주소·비밀값은 감사 기록에 남기지 않음.
+- 초기 enabled=false. 공급자와 인증된 내부 디스패처 검증 후 별도로 활성화.
+
+배포 단위
+- migrations: 20261017044453, 20261017044653, 20261017044845.
+- Edge: supabase/functions/workflow-email. @supabase/server 1.9.2, deno.lock 동봉.
+- 함수는 verify_jwt=false이지만 32바이트 난수의 별도 서버 발송 토큰 필수. 사용자 JWT/publishable key로 호출 불가.
+- 신규 서버 비밀 이름: RESEND_WORKFLOW_API_KEY, WORKFLOW_EMAIL_DISPATCH_SECRET, WORKFLOW_EMAIL_SITE_ORIGIN, WORKFLOW_EMAIL_FROM.
+- Vault: solar_workflow_email_dispatch_secret, solar_workflow_email_endpoint.
+- cron: solar-workflow-email-dispatch. 1분마다 대기/만료 처리 건이 있을 때만 Edge 호출.
+- 설치 SQL: supabase/operations/workflow_email_dispatcher.sql. 서버 연결 주소는 전용 설정, 메일의 사이트 주소/발신자는 서버 환경 설정.
+- 설정 도구: SOLAR_EMAIL_SETUP=1 node demo-site/scripts/configure-workflow-email.mjs. 정상 CLI 인증 사용, 비밀값은 숨긴 stdin/pipe만 사용.
+- 설정 도구의 공급자 시험은 공식 delivered+...@resend.dev 테스트 주소 3개로만 전송. 실제 사용자 수신함 시험과 구분.
+
+검증
+- 단위/회귀 203개 통과. 신규 메일 12개: 한글 본문, 역할별 링크, HTML escaping, 단일 수신자, 예약 주소 차단, idempotency, 429/실패/불명, 서버 토큰/설정, 처리 횟수 제한, 결과 저장 실패 시 중단.
+- 격리 PostgreSQL 전체 마이그레이션 + 업무/권한 5개 묶음 통과. 신규 알림 SQL: 실제 보고서 발행/개정과 연결, 익명/인증 사용자 접근 거부, 수신 회수/상태 변경, 성공 응답 재전송, 롤백, lease/claim 위조/중복 완료/동시성 확인.
+- 실제 Auth 관리자 30개, 가입/동의/사업자 권한 28개 통과. 실제 업무 API 178개 통과, 가상 사용자/조직/파일만 만들고 정리.
+- 기존 Auth 3 / 조직 1 / 발전소 1 / 점검 2 / 보고서 2 / Storage 8, 멤버 hash b8718c77763c5c1612992752ac891065 유지 확인.
+- 보안 advisory 신규 경고 없음. 기존 유출 비밀번호 검사 미사용 경고는 이 작업에서 설정 변경하지 않음.
+
+중지/복구
+- 즉시 중지: update private.workflow_email_settings set enabled=false where singleton;
+- 이 설정은 신규 enqueue와 claim을 모두 중지. 진행 중 외부 요청은 취소됐다고 추정하지 않음.
+- 필요 시 cron.alter_job으로 이 이름의 job만 active=false. 기존 초대 SMTP/다른 cron/기존 업무 역할은 건드리지 않음.
+- 결과 불명/접수 기록을 지워 재발송하지 않음. 공급자 기록을 먼저 대조. 테이블/업무 원본/보고서 snapshot을 삭제하는 롤백은 하지 않음.
+- 비밀을 교체할 때 enabled=false에서 Edge/Vault의 내부 토큰을 함께 갱신하고, 인증 없는 호출 거부/정상 빈 큐 호출을 검증한 후 활성화.
+
+현재 배포/활성화 상태
+- 공개 사이트 v35, 소스 26eacb88733bd45a81aa1fc69c559a8a300d9b17.
+- Site 버전 appgprj_6a981be344a0819181e91aa8015c47c2~appgver_d2ce48b198c48191a0b5fdd34ab971f6.
+- 배포 appgdep_6ad2ff0e7ad08191be7260b2014c47d3 성공, audience=public / env revision=2 유지.
+- 직전 화면 복귀 버전은 v34 (appgver_2722f2d5b1fc8191b94cd952e4986b92). DB 발송 중지는 별도로 수행.
+- workflow-email Edge v2 ACTIVE. 익명 POST 401 확인.
+- 배포 후 업무 API 180개, 공개 게스트 31개 통과. 시험 자료 정리 완료.
+- Resend 정상 로그인 확인. solarscope-workflow-email / Sending access / auth.coopco.kr 생성 화면에서 사용자 승인을 기다림. 아직 새 키를 생성하지 않음.
+- 공급자 시험 메일은 아직 보내지 않음. dispatcher cron/Vault/발송 키 설정도 아직 설치하지 않음.
+- enabled=false / outbox=0. 따라서 자동 발송을 시작했다고 표시하면 안 됨.
+- 사용자 승인 후 전용 키를 생성하고 configure-workflow-email.mjs를 실행하면 공식 공급자 시험 주소 3종 검증과 서버 연결을 수행한다.
+- 빈 큐의 인증된 호출 및 실제 cron→큐→공급자 시험을 검증한 후 enabled=true로 최종 전환한다. 기존 과거 점검/보고서는 소급 enqueue하지 않는다.
