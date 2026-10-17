@@ -68,8 +68,14 @@ test('internal discard confirmation rechecks current busy state and cancel never
 });
 test('finding selection and new finding requests are guarded and cannot replace an in-flight editor', () => {
   const code = read('../components/live/live-findings.tsx');
-  assert.ok(code.includes('change.request(() => setEditing(f))'));
-  assert.ok(code.includes('newFinding={() => change.request(finishEditing)}'));
+  assert.match(
+    code,
+    /change\.request\(\(\) => \{\s*focusRequested\.current = true;\s*setEditing\(f\);/,
+  );
+  assert.match(
+    code,
+    /newFinding=\{\(\) =>\s*change\.request\(\(\) => \{\s*focusRequested\.current = true;\s*finishEditing\(\);/,
+  );
   assert.ok(code.includes('disabled={!props.canWrite || editorBusy}'));
   assert.ok(code.includes('props.onPending(true)'));
   assert.ok(code.includes('props.onPending(false)'));

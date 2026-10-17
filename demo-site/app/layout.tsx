@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
+import { HistoryPositionTracking } from '@/components/history-position';
+import Script from 'next/script';
+import { historyGuardBootstrap } from '@/lib/history-guard';
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -44,6 +47,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <Script
+          id="solarscope-history-guard"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{ __html: historyGuardBootstrap }}
+        />
+        <HistoryPositionTracking />
         {children}
       </body>
     </html>

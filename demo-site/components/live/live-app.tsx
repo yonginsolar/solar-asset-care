@@ -19,6 +19,7 @@ import {
   inspectionNextStep,
 } from '@/lib/novice-workflow';
 import { ErrorNotice } from './error-notice';
+import { maintenanceStatuses } from '@/lib/maintenance-status';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import {
   AlertTriangle,
@@ -173,16 +174,6 @@ const reportStatuses = [
   ['approved', '승인'],
   ['published', '발행'],
   ['withdrawn', '회수'],
-] as const;
-
-const maintenanceStatuses = [
-  ['requested', '요청'],
-  ['assigned', '담당 배정'],
-  ['quoted', '견적'],
-  ['scheduled', '일정 확정'],
-  ['in_progress', '작업 중'],
-  ['completed', '완료'],
-  ['cancelled', '취소'],
 ] as const;
 
 const partnerTypeLabels: Record<string, string> = {

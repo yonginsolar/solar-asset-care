@@ -14,6 +14,8 @@ import {
   type AccountDetails,
 } from '@/lib/service-access';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { useGuardedAction } from '@/lib/use-guarded-action';
+import { DraftChangeDialog } from './draft-change-dialog';
 import { ErrorNotice } from './error-notice';
 import {
   AlertDialog,
@@ -83,6 +85,40 @@ export function CustomersView({
     label: string;
   } | null>(null);
   useDraftProtection(Boolean(name || bn || representative), busy);
+  const importChange = useGuardedAction(() =>
+    busy || lock.current
+      ? 'busy'
+      : name || bn || representative
+        ? 'dirty'
+        : 'clean',
+  );
+  function importApplicant(details: AccountDetails) {
+    const next = {
+      kind: details.kind ?? 'individual',
+      name: details.business_name ?? details.name,
+      bn: details.business_number ?? '',
+      representative: details.representative ?? '',
+    };
+    if (
+      next.kind === kind &&
+      next.name === name &&
+      next.bn === bn &&
+      next.representative === representative
+    )
+      return;
+    importChange.request(() => {
+      setKind(next.kind);
+      setName(next.name);
+      setBn(next.bn);
+      setRepresentative(next.representative);
+      setError('');
+      setMessage('');
+      window.requestAnimationFrame(() => {
+        nameRef.current?.scrollIntoView({ block: 'center' });
+        nameRef.current?.focus({ preventScroll: true });
+      });
+    });
+  }
   const read = useCallback(
     (signal?: AbortSignal) =>
       serviceRpc<Data>(
@@ -153,6 +189,7 @@ export function CustomersView({
           고객과 담당자 계정·발전소를 연결합니다. 담당자는 각자 로그인합니다.
         </p>
       </div>
+      <DraftChangeDialog guard={importChange} />
       {error && (
         <ErrorNotice
           message={error}
@@ -196,11 +233,25 @@ export function CustomersView({
                 <Button type="submit" variant="outline">
                   검색
                 </Button>
+                {(query || search) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setQuery('');
+                      setSearch('');
+                    }}
+                  >
+                    초기화
+                  </Button>
+                )}
               </form>
               <div className="mt-4 space-y-2">
                 {options.length === 0 ? (
                   <p className="py-6 text-center text-sm text-slate-500">
-                    등록된 고객이 없습니다.
+                    {data.customers.length === 0
+                      ? '등록된 고객이 없습니다.'
+                      : '검색 결과가 없습니다. 검색어를 바꾸거나 초기화해 주세요.'}
                   </p>
                 ) : (
                   options.map((c) => (
@@ -501,12 +552,7 @@ export function CustomersView({
                         variant="outline"
                         className="mt-2"
                         disabled={busy}
-                        onClick={() => {
-                          setKind(a.details!.kind ?? 'individual');
-                          setName(a.details!.business_name ?? a.details!.name);
-                          setBn(a.details!.business_number ?? '');
-                          setRepresentative(a.details!.representative ?? '');
-                        }}
+                        onClick={() => importApplicant(a.details!)}
                       >
                         등록 양식에 가져오기
                       </Button>

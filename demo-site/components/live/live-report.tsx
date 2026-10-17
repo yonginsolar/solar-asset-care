@@ -1,5 +1,6 @@
 'use client';
 import { reportLoginPath } from '@/lib/novice-workflow';
+import { maintenanceStatusLabel } from '@/lib/maintenance-status';
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -577,7 +578,7 @@ export function LiveReport({ reportId }: { reportId: string }) {
                   className="flex flex-col justify-between gap-1 border-b pb-3 sm:flex-row"
                 >
                   <span>{item.title}</span>
-                  <strong>{item.status}</strong>
+                  <strong>{maintenanceStatusLabel(item.status)}</strong>
                 </li>
               ))}
             </ul>

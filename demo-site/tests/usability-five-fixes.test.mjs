@@ -143,7 +143,8 @@ test('history guard restores URL/position before prompting and checks busy again
   assert.ok(hook.includes('window.history.go(delta)'));
   assert.ok(hook.includes('restoring.current = after'));
   assert.ok(hook.includes('event.stopImmediatePropagation()'));
-  assert.ok(hook.includes('{ capture: true }'));
+  assert.ok(hook.includes('installHistoryGuard(window).subscribe'));
+  assert.match(read('../lib/history-guard.ts'), /capture: true/);
   assert.ok(hook.includes("if (draftNavigationState(window) === 'busy')"));
   assert.ok(!hook.includes('localStorage'));
   assert.ok(!hook.includes('user_metadata'));

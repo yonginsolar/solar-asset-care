@@ -80,6 +80,14 @@ export function FindingsEditorView(props: Props) {
   const change = useGuardedAction();
   useDraftProtection(false, editorBusy);
   const activeEditing = editing?.inspection_id === id ? editing : null;
+  const editorRef = useRef<HTMLElement>(null);
+  const focusRequested = useRef(false);
+  useEffect(() => {
+    if (!focusRequested.current || !editorRef.current) return;
+    focusRequested.current = false;
+    editorRef.current.scrollIntoView({ block: 'start' });
+    editorRef.current.focus({ preventScroll: true });
+  }, [activeEditing?.id, activeEditing?.updated_at, editorVersion]);
   const finishEditing = () => {
     setEditing(null);
     setEditorVersion((v) => v + 1);
@@ -115,15 +123,27 @@ export function FindingsEditorView(props: Props) {
       </p>
       <div className="grid items-start gap-5 xl:grid-cols-2">
         {id && props.canWrite && (
-          <FindingForm
-            key={`${id}-${activeEditing?.id ?? 'new'}-${activeEditing?.updated_at ?? ''}-${editorVersion}`}
-            {...props}
-            inspectionId={id}
-            initial={activeEditing}
-            finish={finishEditing}
-            newFinding={() => change.request(finishEditing)}
-            onPending={setEditorBusy}
-          />
+          <section
+            ref={editorRef}
+            aria-label={activeEditing ? '소견 수정' : '수동 소견 등록'}
+            tabIndex={-1}
+            className="min-w-0 scroll-mt-40 outline-none"
+          >
+            <FindingForm
+              key={`${id}-${activeEditing?.id ?? 'new'}-${activeEditing?.updated_at ?? ''}-${editorVersion}`}
+              {...props}
+              inspectionId={id}
+              initial={activeEditing}
+              finish={finishEditing}
+              newFinding={() =>
+                change.request(() => {
+                  focusRequested.current = true;
+                  finishEditing();
+                })
+              }
+              onPending={setEditorBusy}
+            />
+          </section>
         )}
         <section className="space-y-3">
           {findings.map((f) => (
@@ -173,7 +193,10 @@ export function FindingsEditorView(props: Props) {
                     activeEditing.updated_at === f.updated_at
                   )
                     return;
-                  change.request(() => setEditing(f));
+                  change.request(() => {
+                    focusRequested.current = true;
+                    setEditing(f);
+                  });
                 }}
               >
                 판정·수정
