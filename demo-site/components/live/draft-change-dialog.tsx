@@ -19,12 +19,9 @@ export function DraftChangeDialog({
   return (
     <>
       {guard.blocked && (
-        <p
-          role="status"
-          className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
-        >
+        <output className="block rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           저장 결과를 확인하는 중입니다. 완료 후 변경해 주세요.
-        </p>
+        </output>
       )}
       <AlertDialog
         open={guard.pending}
@@ -41,7 +38,9 @@ export function DraftChangeDialog({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={guard.cancel}>이어서 작성</AlertDialogCancel>
+            <AlertDialogCancel onClick={guard.cancel}>
+              이어서 작성
+            </AlertDialogCancel>
             <Button type="button" onClick={guard.confirm}>
               저장하지 않고 변경
             </Button>

@@ -115,7 +115,8 @@ test('photo selection only discards caption/masks after confirmation, and never 
 });
 test('certificate search does not mark an operational draft; card edits, filters, reload and pages do', () => {
   const code = read('../components/live/live-recycling.tsx');
-  assert.ok(code.includes('ref={correction.ref}'));
+  assert.ok(code.includes('ref={correctionRef}'));
+  assert.match(code, /ref: correctionRef, \.\.\.correction/);
   assert.ok(code.includes('correction.getState()'));
   assert.ok(
     code.includes('useDraftProtection(Boolean(reason || confirmed), writing)'),

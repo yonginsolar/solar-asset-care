@@ -124,10 +124,18 @@ try {
   console.error(String(e.stderr || e.message));
   process.exitCode = 1;
 } finally {
-  if (running)
-    run('pg_ctl', ['-D', join(work, 'data'), '-m', 'fast', '-w', 'stop']);
-  if (!work.startsWith(join(tmpdir(), 'solar-workflow-')))
-    throw Error('Unexpected temporary path');
-  rmSync(work, { recursive: true, force: true });
-  console.log('CLEANED isolated local fixtures and cluster only');
+  try {
+    if (running)
+      run('pg_ctl', ['-D', join(work, 'data'), '-m', 'fast', '-w', 'stop']);
+    if (!work.startsWith(join(tmpdir(), 'solar-workflow-'))) {
+      console.error('Refused unexpected temporary path');
+      process.exitCode = 1;
+    } else {
+      rmSync(work, { recursive: true, force: true });
+      console.log('CLEANED isolated local fixtures and cluster only');
+    }
+  } catch (error) {
+    console.error('Local fixture cleanup failed:', error.message);
+    process.exitCode = 1;
+  }
 }

@@ -62,7 +62,7 @@ test('calculation and certificate registration protect dirty input and pending w
     assert.match(code, /useFormDraftProtection\((?:busy|saving)\)/);
     assert.match(
       code,
-      /<form\s+ref=\{draft.ref\}\s+onInput=\{draft.onInput\}\s+onChange=\{draft.onChange\}/,
+      /<form\s+ref=\{formRef\}\s+onInput=\{draft.onInput\}\s+onChange=\{draft.onChange\}/,
     );
   }
   const cert = read('../components/live/live-recycling.tsx');

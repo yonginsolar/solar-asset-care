@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { startClientRead } from '@/lib/client-read';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Tables, Json } from '@/lib/supabase/database.types';
 import { Button } from '@/components/ui/button';
@@ -54,6 +55,7 @@ export function CustomersView({
   plants: Tables<'plants'>[];
 }) {
   const [data, setData] = useState<Data | null>(null);
+  const fieldId = useId();
   const [selected, setSelected] = useState('');
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
@@ -74,32 +76,29 @@ export function CustomersView({
     label: string;
   } | null>(null);
   useDraftProtection(Boolean(name || bn || representative), busy);
-  async function load(signal?: AbortSignal) {
-    const r = await serviceRpc<Data>(
-      supabase,
-      'service_admin_action',
-      { p_org: organizationId, p_action: 'customers.read' },
-      signal,
-    );
-    setData(r);
+  const read = useCallback(
+    (signal?: AbortSignal) =>
+      serviceRpc<Data>(
+        supabase,
+        'service_admin_action',
+        { p_org: organizationId, p_action: 'customers.read' },
+        signal,
+      ),
+    [supabase, organizationId],
+  );
+  async function load() {
+    setData(await read());
   }
   useEffect(() => {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 20000);
-    void load(c.signal)
-      .catch((e) =>
+    return startClientRead(read, {
+      success: setData,
+      error: (e, timedOut) =>
         setError(
-          c.signal.aborted
-            ? '조회가 지연됩니다. 다시 불러와 주세요.'
-            : problem(e),
+          timedOut ? '조회가 지연됩니다. 다시 불러와 주세요.' : problem(e),
         ),
-      )
-      .finally(() => setLoading(false));
-    return () => {
-      clearTimeout(t);
-      c.abort();
-    };
-  }, [supabase, organizationId]);
+      settled: () => setLoading(false),
+    });
+  }, [read]);
   const current = data?.customers.find((c) => c.id === selected);
   async function act(action: string, payload: Record<string, Json>) {
     if (lock.current) return;
@@ -156,9 +155,7 @@ export function CustomersView({
         </p>
       )}
       {message && (
-        <p role="status" className="text-sm text-teal-800">
-          {message}
-        </p>
+        <output className="block text-sm text-teal-800">{message}</output>
       )}
       {!data ? (
         <Button
@@ -431,9 +428,13 @@ export function CustomersView({
               </label>
               {kind !== 'individual' && (
                 <>
-                  <label className="space-y-2 text-sm">
+                  <label
+                    htmlFor={`${fieldId}-business-number`}
+                    className="space-y-2 text-sm"
+                  >
                     <span className="block">사업자등록번호</span>
                     <Input
+                      id={`${fieldId}-business-number`}
                       required
                       maxLength={12}
                       value={bn}
@@ -441,9 +442,13 @@ export function CustomersView({
                       inputMode="numeric"
                     />
                   </label>
-                  <label className="space-y-2 text-sm">
+                  <label
+                    htmlFor={`${fieldId}-representative`}
+                    className="space-y-2 text-sm"
+                  >
                     <span className="block">대표자 (선택)</span>
                     <Input
+                      id={`${fieldId}-representative`}
                       maxLength={80}
                       value={representative}
                       onChange={(e) => setRepresentative(e.target.value)}

@@ -146,7 +146,7 @@ function SettingsForm(
 ) {
   const initial = props.initial?.values as Settings | undefined;
   const [busy, setBusy] = useState(false);
-  const draft = useFormDraftProtection(busy);
+  const { ref: formRef, ...draft } = useFormDraftProtection(busy);
   async function submit(e: SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
@@ -184,7 +184,7 @@ function SettingsForm(
   }
   return (
     <form
-      ref={draft.ref}
+      ref={formRef}
       onInput={draft.onInput}
       onChange={draft.onChange}
       onSubmit={submit}
@@ -366,7 +366,7 @@ function AssessmentForm(
   const r = a?.result as AssessmentResult | undefined;
   const warnings = (a?.warnings ?? []) as string[];
   const [busy, setBusy] = useState(false);
-  const draft = useFormDraftProtection(busy);
+  const { ref: formRef, ...draft } = useFormDraftProtection(busy);
   const [settingsId, setSettingsId] = useState(
     a?.settings_id ||
       props.settings.find((s) => s.effective_from <= koreanDate())?.id ||
@@ -444,7 +444,7 @@ function AssessmentForm(
         </p>
       )}
       <form
-        ref={draft.ref}
+        ref={formRef}
         onInput={draft.onInput}
         onChange={draft.onChange}
         onSubmit={submit}

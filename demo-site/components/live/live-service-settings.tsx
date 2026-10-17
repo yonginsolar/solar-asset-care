@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { startClientRead } from '@/lib/client-read';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/supabase/database.types';
 import { Button } from '@/components/ui/button';
@@ -82,36 +83,36 @@ export function ServiceSettingsView({
   const [confirm, setConfirm] = useState(false);
   const [history, setHistory] = useState('');
   const lock = useRef(false);
-  async function load(signal?: AbortSignal) {
-    const r = await serviceRpc<Config>(
-      supabase,
-      'service_admin_action',
-      { p_org: organizationId, p_action: 'settings.read' },
-      signal,
-    );
+  const read = useCallback(
+    (signal?: AbortSignal) =>
+      serviceRpc<Config>(
+        supabase,
+        'service_admin_action',
+        { p_org: organizationId, p_action: 'settings.read' },
+        signal,
+      ),
+    [supabase, organizationId],
+  );
+  const accept = useCallback((r: Config) => {
     const d = { ...emptyServiceContent, ...r.draft };
     setConfig(r);
     setDraft(d);
     setSaved(JSON.stringify(d));
+  }, []);
+  async function load() {
+    accept(await read());
   }
   useEffect(() => {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 20000);
-    void load(c.signal)
-      .catch((e) =>
+    return startClientRead(read, {
+      success: accept,
+      error: (e, timedOut) =>
         setError(
-          c.signal.aborted
-            ? '조회가 지연됩니다. 다시 불러와 주세요.'
-            : problem(e),
+          timedOut ? '조회가 지연됩니다. 다시 불러와 주세요.' : problem(e),
         ),
-      )
-      .finally(() => setLoading(false));
-    return () => {
-      clearTimeout(t);
-      c.abort();
-    };
+      settled: () => setLoading(false),
+    });
     // Initial data only: never replace an edited draft through a background refresh.
-  }, [supabase, organizationId]);
+  }, [read, accept]);
   const dirty = JSON.stringify(draft) !== saved;
   const canApply = Boolean(config?.revision) && serviceContentReady(draft);
   useDraftProtection(Boolean(config) && dirty, busy);
@@ -166,12 +167,9 @@ export function ServiceSettingsView({
         </p>
       )}
       {message && (
-        <p
-          role="status"
-          className="rounded-xl bg-teal-50 p-4 text-sm text-teal-800"
-        >
+        <output className="block rounded-xl bg-teal-50 p-4 text-sm text-teal-800">
           {message}
-        </p>
+        </output>
       )}
       {!config ? (
         <Button

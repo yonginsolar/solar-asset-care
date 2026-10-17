@@ -54,7 +54,7 @@ try {
   console.log(
     'PASS full migration history restored on isolated local Postgres',
   );
-  const result = run('psql', [
+  run('psql', [
     '-d',
     name,
     '-v',
@@ -88,10 +88,21 @@ try {
   console.log('PASS synthetic full-schema/data backup and isolated restore');
   console.log('Synthetic backup artifact:', dump);
 } finally {
+  let cleanupFailed = false;
   for (const db of created.reverse()) {
-    if (!/^solar_service_qa_[a-f0-9]{12}(_restored)?$/.test(db))
-      throw new Error('Invalid cleanup target');
-    run('dropdb', [db]);
+    if (!/^solar_service_qa_[a-f0-9]{12}(_restored)?$/.test(db)) {
+      console.error('Refused invalid cleanup target');
+      process.exitCode = 1;
+      cleanupFailed = true;
+      continue;
+    }
+    try {
+      run('dropdb', [db]);
+    } catch (error) {
+      console.error('QA database cleanup failed:', error.message);
+      process.exitCode = 1;
+      cleanupFailed = true;
+    }
   }
-  console.log('CLEANED isolated QA databases; no production data changed');
+  if (!cleanupFailed) console.log('CLEANED isolated QA databases; no production data changed');
 }

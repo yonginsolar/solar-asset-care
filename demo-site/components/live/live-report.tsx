@@ -63,8 +63,10 @@ function format(value: string | null) {
 
 export function LiveReport({ reportId }: { reportId: string }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
-  const boundary = useMemo(reportSessionBoundary, []);
-  const [sessionUserId, setSessionUserId] = useState<string | null>();
+  const boundary = useMemo(() => reportSessionBoundary(), []);
+  const [sessionUserId, setSessionUserId] = useState<string | null | undefined>(
+    () => (supabase ? undefined : null),
+  );
   const [reportState, setReportState] = useState<{
     owner: string;
     value: ReportData;
@@ -105,10 +107,7 @@ export function LiveReport({ reportId }: { reportId: string }) {
   }
 
   useEffect(() => {
-    if (!supabase) {
-      setSessionUserId(null);
-      return;
-    }
+    if (!supabase) return;
     let mounted = true;
     let observed = false;
     const change = (id: string | null) => {

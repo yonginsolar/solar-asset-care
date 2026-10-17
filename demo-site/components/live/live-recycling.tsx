@@ -82,7 +82,7 @@ export function RecyclingView({
     [plantFilter, setPlantFilter] = useState(''),
     [status, setStatus] = useState('');
   const [uploadId, setUploadId] = useState('');
-  const draft = useFormDraftProtection(saving);
+  const { ref: formRef, ...draft } = useFormDraftProtection(saving);
   const cardGuards = useRef(new Map<string, CardGuard>());
   const [cardEpoch, setCardEpoch] = useState(0);
   const onCardGuard = useCallback((id: string, readState: CardGuard | null) => {
@@ -228,7 +228,7 @@ export function RecyclingView({
             </p>
           ) : (
             <form
-              ref={draft.ref}
+              ref={formRef}
               onInput={draft.onInput}
               onChange={draft.onChange}
               onSubmit={upload}
@@ -504,7 +504,7 @@ function CertificateCard({
     [confirmed, setConfirmed] = useState(false),
     [reason, setReason] = useState('');
   const [writing, setWriting] = useState(false);
-  const correction = useFormDraftProtection(writing);
+  const { ref: correctionRef, ...correction } = useFormDraftProtection(writing);
   useDraftProtection(Boolean(reason || confirmed), writing);
   const readGuard: CardGuard = () =>
     writing
@@ -664,7 +664,7 @@ function CertificateCard({
                 등록 정보 수정
               </summary>
               <form
-                ref={correction.ref}
+                ref={correctionRef}
                 onInput={correction.onInput}
                 onChange={correction.onChange}
                 onSubmit={correct}

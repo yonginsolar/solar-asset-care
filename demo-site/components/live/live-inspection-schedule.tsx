@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useState, type SyntheticEvent } from 'react';
+import { useId, useRef, useState, type SyntheticEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Tables } from '@/lib/supabase/database.types';
 import { parseKoreanInput, toKoreanInput } from '@/lib/operational-assessment';
@@ -22,6 +22,7 @@ export function InspectionScheduleEditor({
 }) {
   // Retain the exact edited revision through refresh/failure, never overwrite a draft.
   const [original] = useState(inspection);
+  const fieldId = useId();
   const start = original.scheduled_at
     ? toKoreanInput(original.scheduled_at)
     : '';
@@ -89,17 +90,22 @@ export function InspectionScheduleEditor({
         </p>
       )}
       <fieldset disabled={busy} className="grid min-w-0 gap-3 sm:grid-cols-2">
-        <label className="min-w-0 space-y-2 text-sm">
+        <label
+          htmlFor={`${fieldId}-start`}
+          className="min-w-0 space-y-2 text-sm"
+        >
           예정 일시
           <Input
+            id={`${fieldId}-start`}
             type="datetime-local"
             value={scheduledAt}
             onChange={(e) => setScheduledAt(e.target.value)}
           />
         </label>
-        <label className="min-w-0 space-y-2 text-sm">
+        <label htmlFor={`${fieldId}-end`} className="min-w-0 space-y-2 text-sm">
           완료 목표
           <Input
+            id={`${fieldId}-end`}
             type="datetime-local"
             value={dueAt}
             onChange={(e) => setDueAt(e.target.value)}

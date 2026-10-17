@@ -1,9 +1,18 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { draftNavigationState } from './draft-navigation';
 import { portalPath } from './portal';
 import {
   readWorkspaceLocation,
+  createWorkspaceLocationStore,
   workspaceHref,
   type WorkspaceLocation,
 } from './workspace-navigation';
@@ -14,29 +23,38 @@ const markerKey = 'solarScopeWorkspace';
 
 /** URL contains menu and opaque inspection id only: never a role grant, draft, File or token. */
 export function useWorkspaceLocation(role: string, onBusy: () => void) {
-  const [location, setLocation] = useState<WorkspaceLocation>({
-    view: 'dashboard',
-    inspectionId: '',
-  });
-  const [ready, setReady] = useState(false);
+  const store = useMemo(() => createWorkspaceLocationStore(role), [role]);
+  const location = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getServerSnapshot,
+  );
   const [pending, setPending] = useState<HistoryRequest | null>(null);
-  const current = useRef(location);
+  const current = useRef<WorkspaceLocation>(location);
   const marker = useRef<Marker>({ id: '', role, index: 0 });
   const restoring = useRef<(() => void) | null>(null);
   const bypass = useRef<number | null>(null);
   const busyCallback = useRef(onBusy);
-  busyCallback.current = onBusy;
-  function apply(next: WorkspaceLocation) {
-    current.current = next;
-    setLocation(next);
-  }
-  function replace(next: WorkspaceLocation) {
-    window.history.replaceState(
-      { ...window.history.state, [markerKey]: marker.current },
-      '',
-      workspaceHref(portalPath(role), next),
-    );
-  }
+  useLayoutEffect(() => {
+    busyCallback.current = onBusy;
+  }, [onBusy]);
+  const apply = useCallback(
+    (next: WorkspaceLocation) => {
+      current.current = next;
+      store.update(next);
+    },
+    [store],
+  );
+  const replace = useCallback(
+    (next: WorkspaceLocation) => {
+      window.history.replaceState(
+        { ...window.history.state, [markerKey]: marker.current },
+        '',
+        workspaceHref(portalPath(role), next),
+      );
+    },
+    [role],
+  );
   useEffect(() => {
     const old = window.history.state?.[markerKey] as Marker | undefined;
     marker.current =
@@ -48,7 +66,6 @@ export function useWorkspaceLocation(role: string, onBusy: () => void) {
     const initial = readWorkspaceLocation(window.location.search, role);
     apply(initial);
     replace(initial);
-    setReady(true);
     const pop = (event: PopStateEvent) => {
       const target = event.state?.[markerKey] as Marker | undefined;
       if (
@@ -98,10 +115,18 @@ export function useWorkspaceLocation(role: string, onBusy: () => void) {
     };
     window.addEventListener('popstate', pop, { capture: true });
     return () => window.removeEventListener('popstate', pop, { capture: true });
-  }, [role]);
+  }, [role, apply, replace]);
+  const replaceInspection = useCallback(
+    (id: string) => {
+      if (id === current.current.inspectionId) return;
+      const next = { ...current.current, inspectionId: id };
+      apply(next);
+      replace(next);
+    },
+    [apply, replace],
+  );
   return {
     ...location,
-    ready,
     pending,
     go(next: WorkspaceLocation) {
       const safe = readWorkspaceLocation(
@@ -121,12 +146,7 @@ export function useWorkspaceLocation(role: string, onBusy: () => void) {
       );
       apply(safe);
     },
-    replaceInspection(id: string) {
-      if (id === current.current.inspectionId) return;
-      const next = { ...current.current, inspectionId: id };
-      apply(next);
-      replace(next);
-    },
+    replaceInspection,
     cancelHistory() {
       setPending(null);
     },

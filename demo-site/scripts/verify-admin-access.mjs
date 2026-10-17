@@ -47,7 +47,8 @@ async function member(org, actor) { return required(admin.from('organization_mem
 let failure;
 try {
   const a = await makeUser(), b = await makeUser(), c = await makeUser(), expert = await makeUser('expert');
-  const org = await makeOrg(a), otherOrg = await makeOrg(c);
+  const org = await makeOrg(a);
+  await makeOrg(c);
   await required(admin.from('organization_members').insert([
     { organization_id: org.id, user_id: b.id, role: 'owner', status: 'active' },
     { organization_id: org.id, user_id: expert.id, role: 'expert', status: 'active' },

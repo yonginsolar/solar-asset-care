@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { startClientRead } from '@/lib/client-read';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/supabase/database.types';
 import { Button } from '@/components/ui/button';
@@ -46,35 +47,36 @@ export function AccountProfile({
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(!initial);
   const lock = useRef(false);
-  async function load(signal?: AbortSignal) {
-    const d = await serviceRpc<Onboarding>(
-      supabase,
-      'get_service_onboarding',
-      { p_org: organizationId },
-      signal,
-    );
+  const read = useCallback(
+    (signal?: AbortSignal) =>
+      serviceRpc<Onboarding>(
+        supabase,
+        'get_service_onboarding',
+        { p_org: organizationId },
+        signal,
+      ),
+    [supabase, organizationId],
+  );
+  const accept = useCallback((d: Onboarding) => {
     setData(d);
     setDetails({ ...d.profile, kind: d.profile.kind ?? 'individual' });
+  }, []);
+  async function load() {
+    const d = await read();
+    accept(d);
     return d;
   }
   useEffect(() => {
     if (initial) return;
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 20000);
-    void load(c.signal)
-      .catch((e) =>
+    return startClientRead(read, {
+      success: accept,
+      error: (e, timedOut) =>
         setError(
-          c.signal.aborted
-            ? '조회가 지연됩니다. 다시 시도해 주세요.'
-            : problem(e),
+          timedOut ? '조회가 지연됩니다. 다시 시도해 주세요.' : problem(e),
         ),
-      )
-      .finally(() => setLoading(false));
-    return () => {
-      clearTimeout(t);
-      c.abort();
-    };
-  }, [supabase, organizationId, initial]);
+      settled: () => setLoading(false),
+    });
+  }, [read, accept, initial]);
   const isClient = data?.role === 'client';
   const alreadyAccepted = Boolean(
     data?.policy &&
@@ -207,9 +209,7 @@ export function AccountProfile({
         </p>
       )}
       {message && (
-        <p role="status" className="mt-4 text-sm text-teal-800">
-          {message}
-        </p>
+        <output className="mt-4 block text-sm text-teal-800">{message}</output>
       )}
       {!data ? (
         <Button

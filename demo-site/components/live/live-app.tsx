@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   useRef,
@@ -28,7 +29,6 @@ import {
   KeyRound,
   LayoutDashboard,
   Loader2,
-  LockKeyhole,
   LogOut,
   Plus,
   RefreshCw,
@@ -146,28 +146,6 @@ type Workspace = {
 type View = WorkspaceView;
 
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
-
-type AnalysisResult = {
-  disclaimer: string;
-  quality?: 'uniform' | 'relative';
-  summary: {
-    heatIndex: number;
-    contrast: number;
-    hotCandidates: number;
-    coldCandidates: number;
-  };
-  regions: Array<{
-    id: string;
-    kind: 'hot' | 'cold';
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    areaPercent: number;
-    score: number;
-  }>;
-  analyzedAt: string;
-};
 
 const inspectionStatuses = [
   ['requested', '접수'],
@@ -522,7 +500,15 @@ function AuthPanel({
   const [resendSeconds, setResendSeconds] = useState(0);
   const authLock = useRef(false);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<Notice>(null);
+  // AuthPanel mounts only after LiveApp's client Auth read, never in the initial SSR tree.
+  const [notice, setNotice] = useState<Notice>(() =>
+    new URLSearchParams(window.location.hash.slice(1)).has('error')
+      ? {
+          tone: 'error',
+          text: '링크가 만료되었거나 이미 사용되었습니다. 초대는 관리자에게 다시 요청하고, 비밀번호 재설정은 아래 메뉴를 이용해 주세요.',
+        }
+      : null,
+  );
 
   useEffect(() => {
     if (!resendSeconds) return;
@@ -536,10 +522,6 @@ function AuthPanel({
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1));
     if (params.has('error')) {
-      setNotice({
-        tone: 'error',
-        text: '링크가 만료되었거나 이미 사용되었습니다. 초대는 관리자에게 다시 요청하고, 비밀번호 재설정은 아래 메뉴를 이용해 주세요.',
-      });
       window.history.replaceState(null, '', window.location.pathname);
     }
   }, []);
@@ -1057,11 +1039,12 @@ function WorkspaceGate({
   }, [session.user.id, supabase, portal]);
 
   useEffect(() => {
+    const read = workspaceRead.current;
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
     return () => {
       window.clearTimeout(timer);
-      workspaceRead.current.sequence++;
-      workspaceRead.current.controller?.abort();
+      read.sequence++;
+      read.controller?.abort();
     };
   }, [loadWorkspace]);
 
@@ -1270,6 +1253,7 @@ function AdminConsole({
       }),
   );
   const view = navigation.view;
+  const replaceInspection = navigation.replaceInspection;
   const selectedInspection = navigation.inspectionId;
   type Destination =
     | View
@@ -1328,7 +1312,9 @@ function AdminConsole({
     controller: null as AbortController | null,
   });
   const currentView = useRef(view);
-  currentView.current = view;
+  useLayoutEffect(() => {
+    currentView.current = view;
+  }, [view]);
 
   const organizationId = workspace.organization.id;
   const role = workspace.membership.role;
@@ -1628,16 +1614,17 @@ function AdminConsole({
         if (current()) setLoading(false);
       }
     },
-    [organizationId, supabase, view, role],
+    [organizationId, supabase, view, role, isOwner],
   );
 
   useEffect(() => {
     if (!navigation.ready) return;
+    const read = readRequest.current;
     const timer = window.setTimeout(() => void refresh(), 0);
     return () => {
       window.clearTimeout(timer);
-      readRequest.current.sequence++;
-      readRequest.current.controller?.abort();
+      read.sequence++;
+      read.controller?.abort();
     };
   }, [refresh, navigation.ready]);
 
@@ -1647,7 +1634,7 @@ function AdminConsole({
       loadedView === view &&
       workspaceCollections(view, role).includes('inspections')
     )
-      navigation.replaceInspection(
+      replaceInspection(
         resolveInspectionSelection(selectedInspection, inspections),
       );
   }, [
@@ -1657,6 +1644,7 @@ function AdminConsole({
     role,
     selectedInspection,
     inspections,
+    replaceInspection,
   ]);
 
   const shared = {
@@ -2457,25 +2445,14 @@ function PlantsView(
     dataUseConsent,
     requesterId,
   ]);
-  const baseline = useRef(draft);
-  useDraftProtection(props.canWrite && draft !== baseline.current, busy);
+  const [baseline, setBaseline] = useState(draft);
+  useDraftProtection(props.canWrite && draft !== baseline, busy);
   const saveLock = useRef(false);
   const plantChange = useGuardedAction();
   const registrationId = useRef(crypto.randomUUID());
 
   function reset() {
-    baseline.current = JSON.stringify([
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      false,
-      '',
-    ]);
+    setBaseline(JSON.stringify(['', '', '', '', '', '', '', '', false, '']));
     setEditingId(null);
     setEditingUpdatedAt('');
     setName('');
@@ -2505,18 +2482,20 @@ function PlantsView(
     setInverterModel(jsonText(metadata.inverter_model));
     setDataUseConsent(Boolean(metadata.data_use_consent_at));
     setRequesterId('');
-    baseline.current = JSON.stringify([
-      plant.name,
-      plant.code ?? '',
-      plant.address ?? '',
-      plant.capacity_kw == null ? '' : String(plant.capacity_kw),
-      plant.commissioned_on ?? '',
-      jsonText(metadata.operator_type),
-      jsonText(metadata.module_model),
-      jsonText(metadata.inverter_model),
-      Boolean(metadata.data_use_consent_at),
-      '',
-    ]);
+    setBaseline(
+      JSON.stringify([
+        plant.name,
+        plant.code ?? '',
+        plant.address ?? '',
+        plant.capacity_kw == null ? '' : String(plant.capacity_kw),
+        plant.commissioned_on ?? '',
+        jsonText(metadata.operator_type),
+        jsonText(metadata.module_model),
+        jsonText(metadata.inverter_model),
+        Boolean(metadata.data_use_consent_at),
+        '',
+      ]),
+    );
   }
 
   async function save(event: SyntheticEvent<HTMLFormElement>) {
@@ -2980,11 +2959,8 @@ function InspectionsView(
     notes,
     expertId,
   ]);
-  const baseline = useRef(draft);
-  useDraftProtection(
-    props.canCreate && draft !== baseline.current,
-    busy || rowBusy,
-  );
+  const [baseline, setBaseline] = useState(draft);
+  useDraftProtection(props.canCreate && draft !== baseline, busy || rowBusy);
   const createLock = useRef(false);
   const intakeRequestId = useRef(crypto.randomUUID());
 
@@ -3021,15 +2997,17 @@ function InspectionsView(
       props.setNotice({ tone: 'success', text: '점검을 접수했습니다.' });
       intakeRequestId.current = crypto.randomUUID();
       const nextCode = `INS-${Date.now().toString().slice(-8)}`;
-      baseline.current = JSON.stringify([
-        effectivePlantId,
-        nextCode,
-        purpose,
-        scheduledAt,
-        dueAt,
-        '',
-        expertId,
-      ]);
+      setBaseline(
+        JSON.stringify([
+          effectivePlantId,
+          nextCode,
+          purpose,
+          scheduledAt,
+          dueAt,
+          '',
+          expertId,
+        ]),
+      );
       setCode(nextCode);
       setNotes('');
       await props.refresh();
@@ -3756,9 +3734,13 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               사진으로 검토하면 그 확인 사유를 기록합니다.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <label className="grid gap-2 text-sm">
+          <label
+            htmlFor="analysis-resolution-reason"
+            className="grid gap-2 text-sm"
+          >
             확인 사유
             <Textarea
+              id="analysis-resolution-reason"
               value={resolutionReason}
               maxLength={300}
               disabled={resolving}
@@ -4782,7 +4764,7 @@ function PartnerQuotesView(
     busy ||
     requestBusy ||
     Boolean(savingPartnerId || savingQuoteId || selectingQuoteId);
-  const drafts = useSectionDraftProtection(anyBusy);
+  const { ref: sectionRef, ...drafts } = useSectionDraftProtection(anyBusy);
   function beginOperation() {
     if (operationLock.current) return false;
     operationLock.current = true;
@@ -5257,7 +5239,7 @@ function PartnerQuotesView(
   }
 
   return (
-    <div ref={drafts.ref} onInput={drafts.onInput} onChange={drafts.onChange}>
+    <div ref={sectionRef} onInput={drafts.onInput} onChange={drafts.onChange}>
       <fieldset disabled={anyBusy} className="min-w-0 space-y-5">
         <PageHeading
           eyebrow="PARTNER & QUOTE"
@@ -6006,12 +5988,13 @@ function MembersView(
   const superAdminUserId = props.workspace.superAdminUserId;
   const isSuperAdmin = superAdminUserId === props.session.user.id;
   const invitationDraft = JSON.stringify([email, displayName, role]);
-  const invitationBaseline = useRef(invitationDraft);
-  const organizationBaseline = useRef(organizationName);
+  const [invitationBaseline, setInvitationBaseline] = useState(invitationDraft);
+  const [organizationBaseline, setOrganizationBaseline] =
+    useState(organizationName);
   useDraftProtection(
     props.canWrite &&
-      (invitationDraft !== invitationBaseline.current ||
-        organizationName !== organizationBaseline.current),
+      (invitationDraft !== invitationBaseline ||
+        organizationName !== organizationBaseline),
     busy || Boolean(busyMemberId),
   );
 
@@ -6085,7 +6068,7 @@ function MembersView(
           ? `${email.trim()} 주소로 ${roleLabels[role]} 초대 메일을 보냈습니다.`
           : '이미 가입된 계정에 권한을 바로 연결했습니다.',
       });
-      invitationBaseline.current = JSON.stringify(['', '', role]);
+      setInvitationBaseline(JSON.stringify(['', '', role]));
       setEmail('');
       setDisplayName('');
       await props.refresh();
@@ -6139,7 +6122,7 @@ function MembersView(
         .single();
       if (error) throw error;
       else {
-        organizationBaseline.current = organizationName;
+        setOrganizationBaseline(organizationName);
         props.setWorkspace({ ...props.workspace, organization: data });
         props.setNotice({ tone: 'success', text: '조직명을 변경했습니다.' });
       }
@@ -6377,13 +6360,10 @@ function MembersView(
             className="divide-y"
             tabIndex={0}
           >
-            <p
-              role="status"
-              className="px-4 py-3 text-xs text-slate-500 sm:px-5"
-            >
+            <output className="block px-4 py-3 text-xs text-slate-500 sm:px-5">
               {memberTabLabel} {visibleMembers.length}명
               {memberSearch ? ' · 검색 결과' : ''}
-            </p>
+            </output>
             {visibleMembers.map((member) => {
               const profile = props.profiles[member.user_id];
               const protectedSuperAdmin = member.user_id === superAdminUserId;

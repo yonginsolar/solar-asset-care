@@ -206,7 +206,7 @@ function FindingForm(
   const [fileId, setFileId] = useState(f?.source_file_id ?? '');
   const [preview, setPreview] = useState('');
   const [busy, setBusy] = useState(false);
-  const draft = useFormDraftProtection(busy);
+  const { ref: formRef, ...draft } = useFormDraftProtection(busy);
   const [previewError, setPreviewError] = useState('');
   const sourceFile = files.find((file) => file.id === fileId);
   const initialRegion = validImageRegion(f?.region) ? f.region : null;
@@ -370,7 +370,7 @@ function FindingForm(
   }
   return (
     <form
-      ref={draft.ref}
+      ref={formRef}
       onInput={draft.onInput}
       onChange={draft.onChange}
       onSubmit={submit}

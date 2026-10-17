@@ -71,8 +71,12 @@ test('customer plant and inspection forms plus refresh/logout share draft protec
       new RegExp(
         'useDraftProtection\\(\\s*props\\.' +
           permission +
-          ' && draft !== baseline.current,\\s*busy(?: \\|\\| rowBusy)?[,]?\\s*\\)',
+          ' && draft !== baseline,\\s*busy(?: \\|\\| rowBusy)?[,]?\\s*\\)',
       ),
+    );
+    assert.match(
+      section,
+      /const \[baseline, setBaseline\] = useState\(draft\)/,
     );
     assert.match(section, /<fieldset\s+disabled=\{\s*busy(?:\s*\|\|[^}]*)?\}/);
   }

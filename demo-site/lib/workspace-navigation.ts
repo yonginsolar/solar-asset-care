@@ -73,3 +73,34 @@ export function workspaceHref(path: string, location: WorkspaceLocation) {
     params.set('inspection', location.inspectionId.toLowerCase());
   return `${path}?${params}`;
 }
+
+/** Per-mounted-workspace history snapshot; contains no account data, drafts or files. */
+export function createWorkspaceLocationStore(role: string) {
+  const initial = { ...readWorkspaceLocation('', role), ready: false };
+  let snapshot = initial;
+  const listeners = new Set<() => void>();
+  return {
+    getSnapshot: () => snapshot,
+    getServerSnapshot: () => initial,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    update: (location: WorkspaceLocation) => {
+      const safe = readWorkspaceLocation(
+        workspaceHref('', location).slice(1),
+        role,
+      );
+      if (
+        snapshot.ready &&
+        snapshot.view === safe.view &&
+        snapshot.inspectionId === safe.inspectionId
+      )
+        return;
+      snapshot = { ...safe, ready: true };
+      for (const listener of listeners) listener();
+    },
+  };
+}

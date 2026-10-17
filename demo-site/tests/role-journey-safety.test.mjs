@@ -149,10 +149,8 @@ test('actual UI connects identity fencing, replay identifiers, one-field member 
   assert.ok(members.includes('p_expected_updated_at: member.updated_at'));
   assert.ok(members.includes('p_role: updates.role ?? null'));
   assert.ok(members.includes('p_status: updates.status ?? null'));
-  assert.ok(members.includes('invitationDraft !== invitationBaseline.current'));
-  assert.ok(
-    members.includes('organizationName !== organizationBaseline.current'),
-  );
+  assert.ok(members.includes('invitationDraft !== invitationBaseline'));
+  assert.ok(members.includes('organizationName !== organizationBaseline'));
   assert.ok(!members.includes('useDraftProtection(Boolean(memberSearch'));
   assert.ok(app.includes('p_request_id: registrationId.current'));
   assert.ok(app.includes('p_request_id: intakeRequestId.current'));

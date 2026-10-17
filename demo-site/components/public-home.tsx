@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useClientReady } from '@/lib/use-client-ready';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import {
@@ -14,17 +15,20 @@ const CallbackApp = dynamic(
   { ssr: false },
 );
 export function PublicHome() {
-  const [callback, setCallback] = useState(false);
-  useEffect(() => {
+  const ready = useClientReady();
+  return ready ? <ClientHome /> : <PublicLanding />;
+}
+function ClientHome() {
+  const [callback] = useState(() => {
     const fragment = new URLSearchParams(window.location.hash.slice(1));
     const query = new URLSearchParams(window.location.search);
-    setCallback(
-      fragment.has('access_token') ||
-        fragment.has('error') ||
-        query.has('code'),
+    return (
+      fragment.has('access_token') || fragment.has('error') || query.has('code')
     );
-  }, []);
-  if (callback) return <CallbackApp />;
+  });
+  return callback ? <CallbackApp /> : <PublicLanding />;
+}
+function PublicLanding() {
   return (
     <div className="min-h-svh bg-[#f6f8f7] text-slate-900">
       <header className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-5 py-6 sm:px-8">

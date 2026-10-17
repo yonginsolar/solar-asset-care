@@ -119,7 +119,7 @@ try {
   for(const ref of refs) assert.ok(objects.some(o=>o.bucket===ref.bucket&&o.path===ref.path),'Registered attachment is missing from Storage');
   // This key and all plaintext are deliberately destroyed after the drill.
   stage='encrypted archive round trip';
-  writeFileSync(join(source,'manifest.json'),JSON.stringify({project,snapshot,tables:fingerprints.map(({sql,...f})=>f),objects:saved}),{mode:0o600});
+  writeFileSync(join(source,'manifest.json'),JSON.stringify({project,snapshot,tables:fingerprints.map(({sql: _sql,...f})=>f),objects:saved}),{mode:0o600});
   run('pg_restore',['--list',dump]);
   const archive=execFileSync('/usr/bin/tar',['-cf','-','-C',source,'.'],{maxBuffer:300e6,stdio:['ignore','pipe','pipe']});
   const encrypted=sealBackup(archive,key);const opened=openBackup(encrypted,key);assert.equal(digest(opened),digest(archive));

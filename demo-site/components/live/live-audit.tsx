@@ -10,6 +10,7 @@ import {
   type AuditEntry,
 } from '@/lib/audit-display';
 import { loadAuditContext } from '@/lib/audit-context';
+import { startClientRead } from '@/lib/client-read';
 export function AuditView({
   supabase,
   organizationId,
@@ -27,43 +28,38 @@ export function AuditView({
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   useEffect(() => {
-    const c = new AbortController();
-    let current = true;
-    const timer = setTimeout(() => c.abort(), 20000);
-    setLoading(true);
-    setError('');
-    void supabase
-      .from('audit_events')
-      .select('id,occurred_at,action,entity_type,entity_id,actor_user_id')
-      .eq('organization_id', organizationId)
-      .order('occurred_at', { ascending: false })
-      .limit(100)
-      .abortSignal(c.signal)
-      .then(async ({ data, error }) => {
-        if (!current) return;
-        if (error)
+    return startClientRead(
+      async (signal) => {
+        const { data, error } = await supabase
+          .from('audit_events')
+          .select('id,occurred_at,action,entity_type,entity_id,actor_user_id')
+          .eq('organization_id', organizationId)
+          .order('occurred_at', { ascending: false })
+          .limit(100)
+          .abortSignal(signal);
+        if (error) throw error;
+        const labels = await loadAuditContext(
+          supabase,
+          organizationId,
+          data ?? [],
+          signal,
+        );
+        return { rows: data ?? [], labels };
+      },
+      {
+        success: (result) => {
+          setRows(result.rows);
+          setContext(result.labels);
+        },
+        error: (reason, timedOut) =>
           setError(
-            c.signal.aborted
+            timedOut
               ? '조회가 지연됩니다. 다시 불러와 주세요.'
-              : problem(error),
-          );
-        else {
-          setRows(data ?? []);
-          const labels = await loadAuditContext(
-            supabase,
-            organizationId,
-            data ?? [],
-            c.signal,
-          );
-          if (current) setContext(labels);
-        }
-        if (current) setLoading(false);
-      });
-    return () => {
-      current = false;
-      clearTimeout(timer);
-      c.abort();
-    };
+              : problem(reason),
+          ),
+        settled: () => setLoading(false),
+      },
+    );
   }, [supabase, organizationId, retry]);
   return (
     <section>
@@ -78,7 +74,11 @@ export function AuditView({
         <Button
           variant="outline"
           disabled={loading}
-          onClick={() => setRetry(retry + 1)}
+          onClick={() => {
+            setLoading(true);
+            setError('');
+            setRetry(retry + 1);
+          }}
         >
           다시 불러오기
         </Button>
@@ -92,16 +92,16 @@ export function AuditView({
         </p>
       )}
       {!loading && context.partial && (
-        <p role="status" className="mb-4 text-sm text-amber-800">
+        <output className="mb-4 block text-sm text-amber-800">
           일부 항목 이름을 불러오지 못해 기록번호로 표시합니다. 다시 불러올 수
           있습니다.
-        </p>
+        </output>
       )}
       <div className="divide-y rounded-2xl border bg-white px-5">
         {loading ? (
-          <p role="status" className="py-8 text-sm text-slate-500">
+          <output className="block py-8 text-sm text-slate-500">
             이력을 불러오는 중입니다.
-          </p>
+          </output>
         ) : rows.length === 0 ? (
           <p className="py-8 text-sm text-slate-500">표시할 이력이 없습니다.</p>
         ) : (

@@ -7,12 +7,11 @@ import {
 
 /** Internal editor changes must obey the same draft/write boundary as navigation. */
 export function useGuardedAction(readState?: () => DraftNavigationState) {
-  const currentState = useRef(readState);
-  currentState.current = readState;
   const action = useRef<(() => void) | null>(null);
   const [pending, setPending] = useState(false);
   const [blocked, setBlocked] = useState(false);
-  const state = () => currentState.current?.() ?? draftNavigationState(window);
+  // Read only in an event handler, using this committed render's callback.
+  const state = () => readState?.() ?? draftNavigationState(window);
   function cancel() {
     action.current = null;
     setPending(false);
@@ -22,7 +21,7 @@ export function useGuardedAction(readState?: () => DraftNavigationState) {
     pending,
     blocked,
     cancel,
-    request(next: () => void) {
+    request: (next: () => void) => {
       const value = state();
       setBlocked(value === 'busy');
       if (value === 'busy') return false;
@@ -34,7 +33,7 @@ export function useGuardedAction(readState?: () => DraftNavigationState) {
       next();
       return true;
     },
-    confirm() {
+    confirm: () => {
       if (!action.current) return;
       // Recheck at confirmation time; a request may have begun while open.
       if (state() === 'busy') {

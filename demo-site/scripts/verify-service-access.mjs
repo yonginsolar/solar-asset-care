@@ -19,7 +19,7 @@ async function org(owner){const r=await need(admin.from('organizations').insert(
 let failure;
 try{
  const owner=await user('owner'),expert=await user('expert'),a=await user('client'),b=await user('client'),foreign=await user('foreign');
- const o=await org(owner);const other=await org(foreign);
+ const o=await org(owner);await org(foreign);
  await need(admin.from('organization_members').insert([expert,a,b].map(u=>({organization_id:o.id,user_id:u.id,role:u.role,status:'active'}))));
  const action=(who,name,payload={})=>who.client.rpc('service_admin_action',{p_org:o.id,p_action:name,p_payload:payload});
  const profile=(who,policy=null,accept=false)=>who.client.rpc('complete_service_profile',{p_org:o.id,p_details:{name:'가상 '+who.role,phone:'01012345678',...(who.role==='client'?{kind:'individual'}:{})},p_policy_id:policy,p_accept:accept});
@@ -30,7 +30,7 @@ try{
  await denied(action(foreign,'customers.read'),/관리자/,'foreign administrator cannot list customers');
  await denied(action(a,'customers.create',{kind:'individual',name:'가상'}),/관리자/,'customer cannot self-approve shared business access');
  const plant=await need(owner.client.from('plants').insert({organization_id:o.id,name:'[가상] 공동 담당 발전소',capacity_kw:10,address:'검수용 가상 주소'}).select().single());
- const i=await need(owner.client.from('inspections').insert({organization_id:o.id,plant_id:plant.id,inspection_code:'PORTAL-QA',purpose:'가상 포털 화면 검수',assigned_expert_user_id:expert.id,status:'expert_review'}).select().single());
+ await need(owner.client.from('inspections').insert({organization_id:o.id,plant_id:plant.id,inspection_code:'PORTAL-QA',purpose:'가상 포털 화면 검수',assigned_expert_user_id:expert.id,status:'expert_review'}).select().single());
  await need(action(owner,'customers.create',{kind:'corporation',name:'[가상] 고객사업자',business_number:'1234567891',representative:'가상 대표'}));
  const customers=await need(action(owner,'customers.read'));const c=customers.customers[0];
  await need(action(owner,'customers.link_contact',{customer_id:c.id,revision:1,user_id:a.id}));

@@ -21,12 +21,12 @@ export async function loadAuditContext(
         .map((r) => r.entity_id!),
     ),
   ];
-  async function load(
+  async function load<Row extends { id: string }>(
     kind: string,
     query: (
       values: string[],
-    ) => PromiseLike<{ data: unknown[] | null; error: unknown }>,
-    label: (r: Record<string, unknown>) => string,
+    ) => PromiseLike<{ data: Row[] | null; error: unknown }>,
+    label: (r: Row) => string,
   ) {
     const values = ids(kind);
     if (!values.length) return;
@@ -34,7 +34,7 @@ export async function loadAuditContext(
       const { data, error } = await query(values);
       if (error) throw error;
       for (const value of data || []) {
-        const row = value as Record<string, unknown>;
+        const row = value;
         context.targets[auditTargetKey(kind, String(row.id))] = label(
           row,
         ).slice(0, 200);
