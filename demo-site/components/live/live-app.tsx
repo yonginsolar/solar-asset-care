@@ -100,6 +100,11 @@ import {
   manualInspectionStatuses,
 } from '@/lib/inspection-workflow';
 import { draftNavigationState } from '@/lib/draft-navigation';
+import {
+  filterInspections,
+  inspectionStatuses,
+  type InspectionStatusFilter,
+} from '@/lib/inspection-directory';
 import { useWorkspaceLocation } from '@/lib/use-workspace-location';
 import { roleViews, type WorkspaceView } from '@/lib/workspace-navigation';
 import {
@@ -150,19 +155,6 @@ type Workspace = {
 type View = WorkspaceView;
 
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
-
-const inspectionStatuses = [
-  ['requested', '접수'],
-  ['scheduled', '일정 확정'],
-  ['uploading', '자료 업로드'],
-  ['quality_review', '품질 검토'],
-  ['analysis', '규칙 분석'],
-  ['expert_review', '전문가 판정'],
-  ['approval', '승인 대기'],
-  ['published', '발행'],
-  ['closed', '종료'],
-  ['cancelled', '취소'],
-] as const;
 
 const reportStatuses = [
   ['draft', '작성 중'],
@@ -2147,15 +2139,19 @@ function MetricCard({
   note: string;
 }) {
   return (
-    <div className="rounded-2xl border bg-white p-5 shadow-sm">
+    <div className="min-w-0 rounded-2xl border bg-white p-3 shadow-sm sm:p-5">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-slate-600">{label}</span>
-        <span className="grid size-9 place-items-center rounded-xl bg-teal-50 text-teal-700">
-          <Icon className="size-4" />
+        <span className="text-xs font-semibold leading-5 text-slate-600 sm:text-sm">
+          {label}
+        </span>
+        <span className="hidden size-9 shrink-0 place-items-center rounded-xl bg-teal-50 text-teal-700 sm:grid">
+          <Icon className="size-4" aria-hidden="true" />
         </span>
       </div>
-      <strong className="mt-5 block text-3xl tracking-tight">{value}</strong>
-      <span className="mt-1 block text-xs text-slate-400">{note}</span>
+      <strong className="mt-2 block text-2xl tracking-tight sm:mt-5 sm:text-3xl">
+        {value}
+      </strong>
+      <span className="mt-1 block text-xs text-slate-500">{note}</span>
     </div>
   );
 }
@@ -2212,7 +2208,7 @@ function DashboardView(
           ) : undefined
         }
       />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <MetricCard
           icon={Building2}
           label={
@@ -2913,9 +2909,17 @@ function ReadOnlyNote() {
 }
 
 function InspectionReopen(
-  props: SharedProps & { inspection: Inspection; canReopen: boolean },
+  props: SharedProps & {
+    inspection: Inspection;
+    canReopen: boolean;
+    reason?: string;
+    onReasonChange?: (reason: string) => void;
+    onPending?: (pending: boolean) => void;
+  },
 ) {
-  const [reason, setReason] = useState('');
+  const [localReason, setLocalReason] = useState('');
+  const reason = props.reason ?? localReason;
+  const setReason = props.onReasonChange ?? setLocalReason;
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   useDraftProtection(Boolean(reason.trim()), busy);
@@ -2927,6 +2931,7 @@ function InspectionReopen(
         if (lock.current) return;
         lock.current = true;
         setBusy(true);
+        props.onPending?.(true);
         try {
           const result = await props.supabase.rpc('reopen_inspection', {
             p_inspection_id: props.inspection.id,
@@ -2945,6 +2950,7 @@ function InspectionReopen(
         } finally {
           lock.current = false;
           setBusy(false);
+          props.onPending?.(false);
         }
       }}
     >
@@ -2994,6 +3000,36 @@ function InspectionsView(
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(
     null,
   );
+  const [search, setSearch] = useState('');
+  const [reopenReasons, setReopenReasons] = useState<Record<string, string>>(
+    {},
+  );
+  const [reopenPending, setReopenPending] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [statusFilter, setStatusFilter] =
+    useState<InspectionStatusFilter>('all');
+  const filteredInspections = filterInspections(
+    props.inspections,
+    props.plants,
+    search,
+    statusFilter,
+  );
+  const reopening = Object.values(reopenPending).some(Boolean);
+  const hasReopenDraft =
+    props.canUpdate &&
+    !props.expertMode &&
+    props.inspections.some(
+      (inspection) =>
+        inspectionLocked(inspection.status) &&
+        Boolean(reopenReasons[inspection.id]?.trim()),
+    );
+  const filtersLocked =
+    busy ||
+    rowBusy ||
+    Boolean(editingScheduleId) ||
+    reopening ||
+    hasReopenDraft;
   const rowLock = useRef(false);
 
   const effectivePlantId = plantId || props.plants[0]?.id || '';
@@ -3261,7 +3297,79 @@ function InspectionsView(
           </form>
         )}
         <section className="space-y-3">
-          {props.inspections.map((inspection) => {
+          <div className="rounded-2xl border bg-white p-4 shadow-sm">
+            <fieldset disabled={filtersLocked} className="space-y-3">
+              <legend className="sr-only">점검 목록 검색 조건</legend>
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
+                <Field label="점검 검색">
+                  <Input
+                    type="search"
+                    value={search}
+                    placeholder="발전소명·점검 번호·목적"
+                    onChange={(event) => setSearch(event.target.value)}
+                    className="min-h-11"
+                  />
+                </Field>
+                <Field label="상태 필터">
+                  <select
+                    className="min-h-11 w-full rounded-lg border bg-white px-3 text-sm"
+                    aria-label="상태 필터"
+                    value={statusFilter}
+                    onChange={(event) =>
+                      setStatusFilter(
+                        event.target.value as InspectionStatusFilter,
+                      )
+                    }
+                  >
+                    <option value="all">전체 상태</option>
+                    {inspectionStatuses.map(([key, label]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <output
+                  className="text-xs text-slate-600"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  전체 {props.inspections.length}건 중{' '}
+                  {filteredInspections.length}건
+                </output>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="min-h-11"
+                  disabled={
+                    filtersLocked || (!search && statusFilter === 'all')
+                  }
+                  onClick={() => {
+                    setSearch('');
+                    setStatusFilter('all');
+                  }}
+                >
+                  검색 조건 초기화
+                </Button>
+              </div>
+            </fieldset>
+            {editingScheduleId && (
+              <p className="mt-2 text-xs text-slate-600">
+                일정을 저장하거나 수정을 취소하면 검색 조건을 변경할 수
+                있습니다.
+              </p>
+            )}
+            {(reopening || hasReopenDraft) && (
+              <p className="mt-2 text-xs text-slate-600">
+                재개 사유를 지우거나 점검 재개를 완료하면 검색 조건을 변경할 수
+                있습니다.
+              </p>
+            )}
+          </div>
+          {filteredInspections.map((inspection) => {
             const hasOpenReport = props.reports.some(
               (r) =>
                 r.inspection_id === inspection.id &&
@@ -3413,6 +3521,19 @@ function InspectionsView(
                       {...props}
                       inspection={inspection}
                       canReopen={!props.expertMode && props.canUpdate}
+                      reason={reopenReasons[inspection.id] ?? ''}
+                      onReasonChange={(reason) =>
+                        setReopenReasons((current) => ({
+                          ...current,
+                          [inspection.id]: reason,
+                        }))
+                      }
+                      onPending={(pending) =>
+                        setReopenPending((current) => ({
+                          ...current,
+                          [inspection.id]: pending,
+                        }))
+                      }
                     />
                   )}
               </article>
@@ -3423,6 +3544,13 @@ function InspectionsView(
               icon={ClipboardCheck}
               title="접수된 점검이 없습니다"
               copy="새 점검 접수 양식에서 점검을 등록하세요."
+            />
+          )}
+          {props.inspections.length > 0 && filteredInspections.length === 0 && (
+            <EmptyState
+              icon={Search}
+              title="조건에 맞는 점검이 없습니다"
+              copy="검색어 또는 상태를 바꾸거나 검색 조건을 초기화해 주세요."
             />
           )}
         </section>
