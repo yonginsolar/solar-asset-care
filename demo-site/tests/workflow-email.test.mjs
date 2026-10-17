@@ -96,6 +96,87 @@ test('all three events render Korean transactional mail for their role', () => {
     assert.match(message.html, /lang="ko"/);
   }
 });
+for (const [kind, role, title, detail, thanks, path] of [
+  [
+    'inspection_received',
+    'owner',
+    '점검이 접수되었습니다',
+    '새로운 점검 요청이 접수되었습니다. 관리자 화면에서 요청 내용을 확인해 주시기 바랍니다.',
+    '원활한 점검 운영에 협조해 주셔서 감사합니다.',
+    'admin?view=inspections&inspection=' + job.inspectionId,
+  ],
+  [
+    'inspection_received',
+    'client',
+    '점검이 접수되었습니다',
+    '요청하신 점검이 정상적으로 접수되었습니다. 로그인하시면 접수 내용과 진행 상황을 확인하실 수 있습니다.',
+    'SolarScope를 이용해 주셔서 감사합니다.',
+    'client?view=inspections&inspection=' + job.inspectionId,
+  ],
+  [
+    'expert_assigned',
+    'expert',
+    '점검 담당 전문가가 배정되었습니다',
+    '새로운 점검의 담당 전문가로 배정되셨습니다. 전문가 화면에서 점검 내용을 확인해 주시기 바랍니다.',
+    '점검 업무에 협조해 주셔서 감사합니다.',
+    'expert?view=inspections&inspection=' + job.inspectionId,
+  ],
+  [
+    'expert_assigned',
+    'client',
+    '점검 담당 전문가가 배정되었습니다',
+    '요청하신 점검을 담당할 전문가가 배정되었습니다. 로그인하시면 점검 진행 상황을 확인하실 수 있습니다.',
+    'SolarScope를 이용해 주셔서 감사합니다.',
+    'client?view=inspections&inspection=' + job.inspectionId,
+  ],
+  [
+    'report_published',
+    'client',
+    '점검 보고서가 발행되었습니다',
+    '요청하신 점검의 보고서가 발행되었습니다. 로그인하신 후 보고서를 확인해 주시기 바랍니다.',
+    'SolarScope를 이용해 주셔서 감사합니다.',
+    'reports/' + job.id,
+  ],
+]) {
+  test(`polite ${kind}/${role} copy reaches the provider with unchanged routing`, async () => {
+    const input = { ...job, kind, role, reportId: job.id };
+    const message = renderMail(input);
+    const paragraphs = [
+      '안녕하세요. SolarScope입니다.',
+      detail,
+      thanks,
+      '이 메일은 서비스 진행 안내입니다. 회신은 수신되지 않습니다.',
+    ];
+    assert.equal(message.subject, '[SolarScope] ' + title);
+    assert.equal(message.from, config.from);
+    assert.deepEqual(message.to, [job.email]);
+    for (const paragraph of paragraphs) {
+      assert.equal(message.text.split(paragraph).length - 1, 1);
+      assert.equal(message.html.split(paragraph).length - 1, 1);
+    }
+    assert.ok(message.text.includes('\n\n안녕하세요. SolarScope입니다.\n\n'));
+    assert.ok(message.text.includes('\n\n' + thanks + '\n\n'));
+    assert.ok(message.text.includes('확인하기: ' + config.origin + '/' + path));
+    assert.ok(message.text.includes('점검번호: ' + job.inspectionCode));
+    assert.ok(message.html.includes('>로그인 후 확인하기</a>'));
+    assert.ok(!JSON.stringify(message).includes('조합'));
+    let sends = 0;
+    const result = await deliverMail(input, 'fake', async (_url, options) => {
+      sends++;
+      assert.deepEqual(JSON.parse(options.body), message);
+      assert.equal(
+        options.headers['Idempotency-Key'],
+        'solar-workflow-v1/' + job.id,
+      );
+      return Response.json({ id: 'fake-message-id' });
+    });
+    assert.equal(sends, 1);
+    assert.deepEqual(result, {
+      result: 'accepted',
+      providerId: 'fake-message-id',
+    });
+  });
+}
 test('template escapes uploaded identifiers and uses canonical login URL, not supplied origin', () => {
   const m = renderMail({
     ...job,
