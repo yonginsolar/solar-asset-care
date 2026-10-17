@@ -177,6 +177,40 @@ for (const [kind, role, title, detail, thanks, path] of [
     });
   });
 }
+for (const role of ['owner', 'expert', 'client']) {
+  test(`report mail uses the same customer-friendly closing for ${role}`, async () => {
+    const input = { ...job, kind: 'report_published', role, reportId: job.id };
+    const message = renderMail(input);
+    assert.equal(message.subject, '[SolarScope] 점검 보고서가 발행되었습니다');
+    assert.equal(message.from, config.from);
+    assert.deepEqual(message.to, [job.email]);
+    for (const body of [message.text, message.html]) {
+      assert.equal(
+        body.split('SolarScope를 이용해 주셔서 감사합니다.').length - 1,
+        1,
+      );
+      assert.ok(!body.includes('협조해 주셔서'));
+      assert.ok(!/\[TEST\]|테스트/.test(body));
+      assert.ok(body.includes(config.origin + '/reports/' + job.id));
+      assert.ok(body.includes(job.inspectionCode));
+    }
+    let sends = 0;
+    const result = await deliverMail(input, 'fake', async (_url, options) => {
+      sends++;
+      assert.deepEqual(JSON.parse(options.body), message);
+      assert.equal(
+        options.headers['Idempotency-Key'],
+        'solar-workflow-v1/' + job.id,
+      );
+      return Response.json({ id: 'fake-report-message-id' });
+    });
+    assert.equal(sends, 1);
+    assert.deepEqual(result, {
+      result: 'accepted',
+      providerId: 'fake-report-message-id',
+    });
+  });
+}
 test('template escapes uploaded identifiers and uses canonical login URL, not supplied origin', () => {
   const m = renderMail({
     ...job,

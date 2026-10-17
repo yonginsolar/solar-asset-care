@@ -68,7 +68,9 @@ export function renderMail(job: MailJob, config: MailConfig) {
       encodeURIComponent(job.inspectionId);
   const detail = descriptions[job.kind];
   const greeting = "안녕하세요. SolarScope입니다.";
-  const thanks = job.role === "owner"
+  const thanks = job.kind === "report_published"
+    ? "SolarScope를 이용해 주셔서 감사합니다."
+    : job.role === "owner"
     ? "원활한 점검 운영에 협조해 주셔서 감사합니다."
     : job.role === "expert"
     ? "점검 업무에 협조해 주셔서 감사합니다."
