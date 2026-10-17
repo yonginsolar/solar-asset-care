@@ -1,0 +1,121 @@
+SolarScope — 역순 탐색에서 발견한 4가지 수정
+작업일: 2026-10-17
+기준 검수: QA_UNEXPECTED_FLOWS_2026-10-17.txt
+
+1. 변경 범위
+
+U1 개정 분석:
+- private.relative_analysis_editable(uuid)를 내부 상태 검사로 추가했다.
+- 시작·완료·중단/사진 직접 검토가 같은 조건을 사용한다.
+- 이전 발행본보다 높은 버전의 새 draft가 있을 때만 발행본을 보존한 추가 분석이 가능하다.
+- 현재 review/approved 보고서, 점검 published/closed/cancelled는 계속 차단한다.
+- 기존 Auth·can_work_inspection·임대 만료·동시 실행·후보 값 검증·원자 완료·감사 기록을 유지했다.
+- 내부 helper는 postgres 외 클라이언트에 EXECUTE를 부여하지 않았다.
+- 발행 상태에서 업로드 화면이 자동 분석을 약속하지 않게 하고 새 초안으로 안내한다.
+  기존 원본 추가 보관 권한은 회수하지 않았다.
+
+U2 일정:
+- 날짜 없이 일정 확정을 선택하면 쓰기 없이 기존 일정 편집기를 열고 예정일에 포커스한다.
+- 기존 update_inspection_schedule RPC의 역할·RLS·정확한 수정판·행 잠금과 감사는 유지했다.
+- requested/scheduled 두 초기 상태에만 날짜 있음→scheduled, 없음→requested를 원자 반영한다.
+- 다른 고급 진행 상태는 일정 수정으로 되감지 않는다.
+- 별도 BEFORE INSERT/UPDATE 검사가 직접 API로도 날짜 없는 scheduled를 차단한다.
+- 기존 운영 행을 일괄 재작성하거나 최초 의뢰의 날짜·경제성 자료를 필수화하지 않았다.
+
+U3 오류 창:
+- 분석 중단/수동 확인과 업체 선택의 기존 확인창 안에서 실패 문구를 표시한다.
+- 같은 오류로 전역 모달을 다시 열지 않으며 오류 문단으로 포커스를 옮긴다.
+- 일반 입력 화면의 공통 ErrorNotice, 권한·충돌 거부, 취소/처리 중 잠금은 유지했다.
+
+U4 접수 후 상세:
+- 성공 응답으로 받은 요청 ID를 임시 보존하고, 새 RLS 조회 결과에 그 행이 있을 때만 선택한다.
+- 새 초안이나 처리 중 상태를 버리거나, 미확인 응답으로 접수 성공/재실행을 추정하지 않는다.
+- 번호 포함 성공 안내와 해당 상세·메모를 보여주며 모바일 고정 헤더 아래로 포커스한다.
+
+2. 검증
+
+- 단위/회귀 226/226, lint 0건, TypeScript --noEmit 통과.
+- 새 격리 PostgreSQL 17 검사 27건 통과:
+  이전 발행본만 있을 때 차단, 더 높은 새 초안에서 시작·완료·취소·직접 검토,
+  이전 PDF 상태 유지, 검토 중 전환·승인·종료/취소 차단, 오래된 초안 불허,
+  사용자/외부 작업 거부, helper 비공개, 일정 수정판·초기 상태 동기화·직접 우회 차단.
+  이 검사는 외부 연결 없는 임시 Unix socket 클러스터와 합성 자료를 사용했다.
+  최소 스키마·합성 권한 함수의 상태 로직 사전 검사이며 실제 Supabase Auth/RLS 복원이 아니다.
+  실제 인증·RLS·Storage 경계는 아래 별도 179건과 개정 13건에서 확인했다.
+- 실제 Auth/RLS/API 수용시험 179/179 통과:
+  기존 178개 범위와 날짜 없는 일정 확정 직접 우회 차단을 포함한다.
+  초기 일정의 상태 연동 기대값을 승인된 수정에 맞췄으며 고급 상태 불변·권한/수정판은 유지했다.
+- 추가 실제 인증 개정 흐름 13/13 통과:
+  이전 고객 PDF 열람 → 새 초안 → 상대 분석 API 200 → 결과 저장 → 이전 PDF byte hash 동일
+  → 전문가 검토 요청 → 고객 미발행 PDF 차단/전문가 승인 차단 → 관리자 승인
+  → 서버 PDF 보관 → 새 발행본이 이전 버전 원자 대체 → 고객 새 PDF 다운로드.
+  이전 PDF와 스냅샷의 저장 식별값은 그대로 남고 대체된 발행본의 고객 접근만 차단됨.
+- 추가 begin/cancel 실제 Auth 확인 2건 성공:
+  이전 발행본 유지 상태에서 실행 시작, 기존 관리자 권한으로 중단 확인.
+- 게스트/샘플 PDF/비공개 API 경계 31건: 로컬·공개 사이트 통과.
+- 브라우저 실제 확인:
+  390px 고객 새 의뢰 연속 클릭은 1건, 새 번호/메모 자동 선택·포커스/160px 위치,
+  새 입력의 이동 경고·취소·원복 후 이동 유지.
+  관리자 일정 확정 먼저 클릭 시 날짜 입력/포커스, 실제 날짜 저장 후 확정 상태 확인.
+  전문가의 분석 중단 창을 열고 다른 Auth 세션에서 상태를 바꾼 뒤 제출:
+  충돌 거부 정상, 모달 1개, activeElement=오류 alert, 기존 alertdialog 내부 포커스 유지.
+  이후 새 조회→사진 직접 검토 확인 성공.
+  320px 전문가 화면 문서 너비 320px, 발행 후 자동 분석 끔·새 초안 안내 확인.
+- Sites 운영 빌드/패키지 검증 통과. API 키는 기존 publishable 설정만 빌드 프로세스에 전달했다.
+  서버 secret이 포함된 .env.local 전체를 배포 체크아웃에 복사하거나 source하지 않았다.
+
+3. DB 적용·권한·보존
+
+- 대상 프로젝트 vzgmryqglptxowbdewkf만 변경했다. ERP Supabase와 다른 서비스는 변경하지 않았다.
+- CLI migration new로 파일을 생성하고 격리 검사 후 정상 원격 migration 경로로 적용했다.
+- 실제 이력과 파일명 일치: 20261017082126_fix_revision_analysis_and_schedule_consistency.sql.
+- 원격 정의의 기존 조건 문자열이 예상과 다르면 전체 migration이 실패하도록 방어했다.
+- 기존 3개 분석 함수의 ACL은 postgres/authenticated로 동일하다. 새 helper는 postgres만 실행한다.
+- RLS, 정책, 테이블 접근, API 키, Auth·SMTP·메일/SMS·요금제 변경 없음.
+- Supabase 보안 점검은 전후 동일한 기존 Auth 비밀번호 유출 보호 미설정 경고만 남았다.
+  이번 범위에서 새 DB 보안 경고 없음. 기존 Auth 설정을 임의 변경하지 않았다.
+  참고: https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection
+
+4. 시험 자료 정리·운영 자료 대조
+
+- 가상 계정 5개·조직 2개, 새 의뢰·일정·개정 초안/발행·분석·PDF를 모두 정리했다.
+- 테스트 정리 코드는 해당 실행이 만든 조직의 보고서 ID/PDF만 수집하도록 보완해
+  브라우저/API로 만든 추가 버전도 누락 없이 정리한다. 기존 조직은 대상에 넣지 않는다.
+- 전후 동일: 사용자 3 / 조직 1 / 발전소 1 / 점검 2 / 보고서 2 / 저장 객체 8.
+- 메일 이력 2, queued/processing 0. 예약된 example.invalid 가상 계정만 사용했으며 실제 발송 없음.
+- 점검 digest 0ecbe4cb5d44c9aabae0733983a8a038 동일.
+- 보고서 digest c1d2e6c37010b3c64900bdc3122152b1 동일.
+- 회원/역할 digest b8718c77763c5c1612992752ac891065 동일.
+- 기존 CHANGELOG.md의 완료 샘플 관련 미커밋 8줄은 보존하고 이번 수정 이력만 별도 스테이징한다.
+
+5. 배포와 복구
+
+- 공개 범위·Site ID·호스팅 환경 revision 2를 유지한다.
+- v38은 런타임 수정의 첫 배포이며, 후속 버전은 배포 소스의 과거 수용시험 스크립트를
+  GitHub의 최신 검사/정리 코드와 일치시킨 소스 정리이다. 런타임 파일과 빌드 출력은 동일하다.
+- 기존 v37 복구점:
+  appgprj_6a981be344a0819181e91aa8015c47c2~appgver_e0f15b8968d481918410baa566ad7072
+- DB 원복 SQL은 작업 증거 폴더 rollback.sql에 이번 변경 전의 실제 함수 정의로 보관했다.
+  새 일정 트리거 제거→기존 4개 함수 복구→helper 제거 순서이며 업무 행을 재작성하지 않는다.
+  단, 구버전의 알려진 개정 분석/일정 문제도 돌아오므로 단순 UI 롤백과 DB 원복은 구분한다.
+- 최종 버전/커밋·공개 화면 확인은 아래 후속 결과에 기록한다.
+
+최종 배포:
+  Site v39 / public / env revision 2 / 2026-10-17 17:39 KST 성공.
+  source: 2a706427c0ce14e9111be45c2606e19ef722eba9
+  version: appgprj_6a981be344a0819181e91aa8015c47c2~appgver_d80c21ca36e08191816f3be6dcad3588
+  deployment: appgdep_6ad3344cdac8819197185adc6568bf11
+  archive SHA-256: dfeece51b1a72ee3ca90f04620d78d5f8df7d5c29955d202b90aef24345f937c
+  v38과 v39의 런타임 archive hash 동일. 관련 앱/시험 6개 파일의 SHA-256은 GitHub 작업본과 일치.
+  URL: https://solar-asset-care-demo.kimminho0914.chatgpt.site/
+
+6. 한계
+
+- Chrome 반응형 검수이며 실제 iOS/Android/Safari는 시험하지 않았다.
+- 브라우저의 로컬 파일 접근 설정을 바꾸거나 실제 회원가입/초대/비밀번호 변경·약관 동의를
+  최종 제출하지 않았다. 원본 업로드/재개·무결성은 실제 Auth API 통합 검사로 확인했다.
+- 현장 사진 진단 정확도 검수는 이번 네 가지 업무 흐름 수정의 검증 범위가 아니다.
+- HWP 브라우저 확장이 HTML 속성을 주입한 로컬 hydration 경고는 제품 회귀와 구분했다.
+
+증거/원복 위치:
+/Users/minho/Library/Mobile Documents/com~apple~CloudDocs/New project/tmp/solar-unexpected-fixes-20261017/

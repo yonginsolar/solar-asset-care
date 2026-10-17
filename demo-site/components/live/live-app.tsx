@@ -3012,7 +3012,9 @@ function InspectionsView(
     onOpenInspection: (id: string) => void;
   },
 ) {
-  const [selectedId] = useInspectionSelection(props.inspections);
+  const [selectedId, selectInspection] = useInspectionSelection(
+    props.inspections,
+  );
   const selected = props.inspections.find((row) => row.id === selectedId);
   const detailRef = useRef<HTMLElement>(null);
   const requestFormRef = useRef<HTMLFormElement>(null);
@@ -3031,6 +3033,12 @@ function InspectionsView(
   const [expertId, setExpertId] = useState('');
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState(false);
+  const [createdInspectionId, setCreatedInspectionId] = useState<string | null>(
+    null,
+  );
+  const [confirmScheduleId, setConfirmScheduleId] = useState<string | null>(
+    null,
+  );
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(
     null,
   );
@@ -3078,6 +3086,34 @@ function InspectionsView(
   ]);
   const [baseline, setBaseline] = useState(draft);
   useDraftProtection(props.canCreate && draft !== baseline, busy || rowBusy);
+  const receiptRows = props.inspections;
+  const setReceiptNotice = props.setNotice;
+  useEffect(() => {
+    if (!createdInspectionId || busy) return;
+    // Wait for the successful refresh and committed draft baseline. Never select
+    // an unconfirmed ID, navigate during a write or discard a newer user draft.
+    const timer = window.setTimeout(() => {
+      if (draftNavigationState(window) !== 'clean') return;
+      const created = receiptRows.find((row) => row.id === createdInspectionId);
+      if (!created) return;
+      if (created.id !== selectedId && !selectInspection(created.id)) return;
+      setCreatedInspectionId(null);
+      setReceiptNotice({
+        tone: 'success',
+        text: `점검 ${created.inspection_code}을 접수했습니다.`,
+      });
+      detailRef.current?.scrollIntoView({ block: 'start' });
+      detailRef.current?.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    createdInspectionId,
+    busy,
+    receiptRows,
+    setReceiptNotice,
+    selectedId,
+    selectInspection,
+  ]);
   const createLock = useRef(false);
   const intakeRequestId = useRef(crypto.randomUUID());
 
@@ -3088,7 +3124,7 @@ function InspectionsView(
     setBusy(true);
     props.setNotice(null);
     try {
-      const { error } = props.requesterMode
+      const { data, error } = props.requesterMode
         ? await props.supabase.rpc('request_inspection', {
             p_request_id: intakeRequestId.current,
             p_plant_id: effectivePlantId,
@@ -3111,6 +3147,7 @@ function InspectionsView(
             notes: notes.trim() || null,
           });
       if (error) throw error;
+      if (props.requesterMode && data?.id) setCreatedInspectionId(data.id);
       props.setNotice({ tone: 'success', text: '점검을 접수했습니다.' });
       setSearch('');
       setStatusFilter('all');
@@ -3140,6 +3177,12 @@ function InspectionsView(
 
   async function updateStatus(inspection: Inspection, status: string) {
     if (rowLock.current) return;
+    if (status === 'scheduled' && !inspection.scheduled_at) {
+      props.setNotice(null);
+      setConfirmScheduleId(inspection.id);
+      setEditingScheduleId(inspection.id);
+      return;
+    }
     rowLock.current = true;
     setRowBusy(true);
     props.setNotice(null);
@@ -3624,7 +3667,11 @@ function InspectionsView(
                       key={inspection.id}
                       inspection={inspection}
                       supabase={props.supabase}
-                      onClose={() => setEditingScheduleId(null)}
+                      confirmSchedule={confirmScheduleId === inspection.id}
+                      onClose={() => {
+                        setEditingScheduleId(null);
+                        setConfirmScheduleId(null);
+                      }}
                       onPending={(pending) => {
                         rowLock.current = pending;
                         setRowBusy(pending);
@@ -3760,6 +3807,10 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
   const [resolutionReason, setResolutionReason] = useState('');
   const [resolving, setResolving] = useState(false);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const resolutionErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (resolutionError) resolutionErrorRef.current?.focus();
+  }, [resolutionError]);
   useDraftProtection(
     queue.some((item) => item.status !== 'done'),
     busy || Boolean(analyzingFileId) || resolving,
@@ -3776,6 +3827,9 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
     props.canWrite &&
     Boolean(currentInspection) &&
     !inspectionLocked(currentInspection?.status);
+  const canAnalyzeSelected =
+    canEditSelected &&
+    !['approval', 'published'].includes(currentInspection?.status ?? '');
   const visibleFiles = inspectionRows(
     props.files,
     effectiveInspectionId,
@@ -3833,7 +3887,6 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
       await props.refresh();
     } catch (error) {
       setResolutionError(errorMessage(error));
-      props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       setResolving(false);
     }
@@ -3970,6 +4023,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
           if (
             !controller.signal.aborted &&
             runAnalysis &&
+            canAnalyzeSelected &&
             kind === 'thermal_original' &&
             ['image/jpeg', 'image/png'].includes(fileRow.mime_type || '') &&
             !hasSuccessfulAnalysis(fileRow.id)
@@ -4074,7 +4128,12 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
             />
           </label>
           {resolutionError && (
-            <p role="alert" className="text-sm text-red-700">
+            <p
+              ref={resolutionErrorRef}
+              tabIndex={-1}
+              role="alert"
+              className="text-sm text-red-700"
+            >
               {resolutionError}
             </p>
           )}
@@ -4131,6 +4190,7 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
                     variant="outline"
                     disabled={busy || Boolean(analyzingFileId) || resolving}
                     onClick={() => {
+                      props.setNotice(null);
                       setResolutionError(null);
                       setResolution({
                         run,
@@ -4284,14 +4344,25 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
               <input
                 type="checkbox"
                 className="mt-1"
-                checked={runAnalysis}
-                disabled={!canEditSelected || busy || Boolean(analyzingFileId)}
+                checked={runAnalysis && canAnalyzeSelected}
+                disabled={
+                  !canAnalyzeSelected || busy || Boolean(analyzingFileId)
+                }
                 onChange={(e) => setRunAnalysis(e.target.checked)}
               />
               JPG·PNG이면 저장 직후 색상 분포 기반 상대 분석 후보도 만듭니다.
               실제 섭씨 온도나 고장 확정값은 아닙니다.
             </label>
           )}
+          {canEditSelected &&
+            !canAnalyzeSelected &&
+            kind === 'thermal_original' && (
+              <p className="text-sm text-amber-800">
+                {currentInspection?.status === 'published'
+                  ? '추가 분석은 새 보고서 초안을 만든 뒤 진행해 주세요.'
+                  : '보고서 검토 중입니다. 수정 요청 후 분석할 수 있습니다.'}
+              </p>
+            )}
           <Button
             type="submit"
             className="w-full"
@@ -4305,7 +4376,9 @@ function FilesView(props: SharedProps & { canWrite: boolean }) {
           >
             {busy ? <Loader2 className="animate-spin" /> : <UploadCloud />}원본
             저장
-            {runAnalysis && kind === 'thermal_original' ? ' + 상대 분석' : ''}
+            {runAnalysis && canAnalyzeSelected && kind === 'thermal_original'
+              ? ' + 상대 분석'
+              : ''}
           </Button>
         </form>
         <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
@@ -5101,6 +5174,10 @@ function PartnerQuotesView(
     request: QuoteRequest;
   } | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
+  const quoteErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (quoteError) quoteErrorRef.current?.focus();
+  }, [quoteError]);
 
   const operationLock = useRef(false);
   const anyBusy =
@@ -5349,7 +5426,6 @@ function PartnerQuotesView(
       setQuoteConfirmation(null);
     } catch (error) {
       setQuoteError(errorMessage(error));
-      props.setNotice({ tone: 'error', text: errorMessage(error) });
     } finally {
       operationLock.current = false;
       setSelectingQuoteId(null);
@@ -5400,7 +5476,12 @@ function PartnerQuotesView(
               </div>
             )}
             {quoteError && (
-              <p role="alert" className="text-sm text-red-700">
+              <p
+                ref={quoteErrorRef}
+                tabIndex={-1}
+                role="alert"
+                className="text-sm text-red-700"
+              >
                 {quoteError}
               </p>
             )}
@@ -5542,6 +5623,7 @@ function PartnerQuotesView(
                             }
                             onClick={() => {
                               setQuoteError(null);
+                              props.setNotice(null);
                               setQuoteConfirmation({ quote, request });
                             }}
                           >

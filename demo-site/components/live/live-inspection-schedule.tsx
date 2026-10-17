@@ -1,5 +1,5 @@
 'use client';
-import { useId, useRef, useState, type SyntheticEvent } from 'react';
+import { useEffect, useId, useRef, useState, type SyntheticEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Tables } from '@/lib/supabase/database.types';
 import { parseKoreanInput, toKoreanInput } from '@/lib/operational-assessment';
@@ -15,16 +15,23 @@ export function InspectionScheduleEditor({
   onClose,
   onSaved,
   onPending,
+  confirmSchedule = false,
 }: {
   inspection: Tables<'inspections'>;
   supabase: SupabaseClient<Database>;
   onClose: () => void;
   onSaved: () => Promise<void>;
   onPending: (pending: boolean) => void;
+  confirmSchedule?: boolean;
 }) {
   // Retain the exact edited revision through refresh/failure, never overwrite a draft.
   const [original] = useState(inspection);
   const fieldId = useId();
+  const startRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    startRef.current?.scrollIntoView({ block: 'center' });
+    startRef.current?.focus({ preventScroll: true });
+  }, []);
   const start = original.scheduled_at
     ? toKoreanInput(original.scheduled_at)
     : '';
@@ -61,6 +68,8 @@ export function InspectionScheduleEditor({
             : null;
       if (scheduled && due && Date.parse(due) < Date.parse(scheduled))
         throw new Error('완료 목표는 예정 일시보다 빠를 수 없습니다.');
+      if (confirmSchedule && !scheduled)
+        throw new Error('일정 확정에는 예정 일시가 필요합니다.');
       const result = await supabase.rpc('update_inspection_schedule', {
         p_inspection_id: original.id,
         p_expected_updated_at: original.updated_at,
@@ -90,6 +99,11 @@ export function InspectionScheduleEditor({
     >
       <DraftChangeDialog guard={close} />
       <p className="text-sm font-bold">점검 일정 수정 · 한국시간</p>
+      {(original.status === 'requested' || original.status === 'scheduled') && (
+        <p className="text-sm text-slate-600">
+          예정 일시를 저장하면 일정이 확정되고, 비우면 접수 상태로 돌아갑니다.
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-sm text-red-700">
           {error}
@@ -102,8 +116,10 @@ export function InspectionScheduleEditor({
         >
           예정 일시
           <Input
+            ref={startRef}
             id={`${fieldId}-start`}
             type="datetime-local"
+            required={confirmSchedule}
             value={scheduledAt}
             onChange={(e) => setScheduledAt(e.target.value)}
           />

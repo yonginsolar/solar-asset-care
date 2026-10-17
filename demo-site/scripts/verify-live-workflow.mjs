@@ -382,8 +382,11 @@ try {
   );
   check(
     Date.parse(scheduled.scheduled_at) === Date.parse('2026-10-20T01:30:00Z') &&
-      scheduled.status === inspection.status,
-    'admin schedules an existing request without changing its workflow state',
+      scheduled.status ===
+        (['requested', 'scheduled'].includes(inspection.status)
+          ? 'scheduled'
+          : inspection.status),
+    'admin confirms an initial schedule atomically without rewinding advanced workflow',
   );
   for (const actor of [expert, client, otherOwner])
     check(
@@ -423,15 +426,29 @@ try {
     ),
     'schedule date order is checked on the server',
   );
-  await required(
+  const clearedSchedule = await required(
     owner.client.rpc(
       'update_inspection_schedule',
       scheduleArgs(scheduled.updated_at),
     ),
   );
   check(
-    true,
-    'optional schedules can be cleared without replacing the inspection',
+    clearedSchedule.scheduled_at === null &&
+      clearedSchedule.due_at === null &&
+      clearedSchedule.status ===
+        (scheduled.status === 'scheduled' ? 'requested' : scheduled.status),
+    'clearing optional dates restores only an initial confirmed schedule',
+  );
+  check(
+    Boolean(
+      (
+        await owner.client
+          .from('inspections')
+          .update({ status: 'scheduled' })
+          .eq('id', inspection.id)
+      ).error,
+    ),
+    'real-Auth status-only schedule confirmation without a date is rejected',
   );
   // Same CAS request as the UI: preserve current RLS and check returned rows.
   const beforeAssignment = await required(
@@ -2465,6 +2482,15 @@ try {
       );
       actor.token = signed.session.access_token;
     }
+    const currentIssue = await required(
+      admin
+        .from('reports')
+        .select('id')
+        .eq('inspection_id', inspection.id)
+        .eq('status', 'published')
+        .maybeSingle(),
+    );
+    if (currentIssue) reportId = currentIssue.id;
     // UI tests may have added certificates; remove only this generated organization's files.
     const uiCertificates = await required(
       admin
@@ -2533,6 +2559,34 @@ try {
   failure = error;
   console.error(`Acceptance failure: ${error.message}`);
 } finally {
+  // UI revision tests may create more report versions/PDFs than this script did.
+  // Collect only IDs from this run's generated organizations before deleting them.
+  for (const organizationId of organizations) {
+    const extraReports = await admin
+      .from('reports')
+      .select('id')
+      .eq('organization_id', organizationId);
+    if (extraReports.error)
+      cleanupErrors.push(`report collection: ${extraReports.error.message}`);
+    else
+      for (const row of extraReports.data || [])
+        if (!createdReportIds.includes(row.id)) createdReportIds.push(row.id);
+  }
+  for (const id of createdReportIds) {
+    const docs = await admin
+      .from('report_documents')
+      .select('storage_path')
+      .eq('report_id', id);
+    if (docs.error) cleanupErrors.push(`PDF collection: ${docs.error.message}`);
+    else
+      for (const row of docs.data || [])
+        if (
+          !paths.some(
+            (p) => p.bucket === 'reports' && p.path === row.storage_path,
+          )
+        )
+          paths.push({ bucket: 'reports', path: row.storage_path });
+  }
   // Collect only objects belonging to this run's generated organizations,
   // including extra evidence created through the browser during an opted-in UI test.
   for (const organizationId of organizations)
