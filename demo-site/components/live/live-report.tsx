@@ -1,4 +1,5 @@
 'use client';
+import { reportLoginPath } from '@/lib/novice-workflow';
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -79,7 +80,9 @@ export function LiveReport({ reportId }: { reportId: string }) {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [workspaceRole, setWorkspaceRole] = useState<string | null>(null);
-  const backPath = workspaceRole ? portalPath(workspaceRole) : '/login';
+  const backPath = workspaceRole
+    ? portalPath(workspaceRole)
+    : reportLoginPath(reportId);
   const backLabel = workspaceRole
     ? portalTitle(workspaceRole)
     : '로그인으로 이동';

@@ -13,6 +13,12 @@ import {
 } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import {
+  newInspectionCode,
+  reportReturnPath,
+  inspectionNextStep,
+} from '@/lib/novice-workflow';
+import { ErrorNotice } from './error-notice';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import {
   AlertTriangle,
@@ -120,7 +126,11 @@ import {
 import { ServiceSettingsView } from './live-service-settings';
 import { CustomersView } from './live-customers';
 import { AuditView } from './live-audit';
-import { serviceRpc, type Onboarding } from '@/lib/service-access';
+import {
+  serviceRpc,
+  userFacingError,
+  type Onboarding,
+} from '@/lib/service-access';
 import {
   portalForRole,
   portalLabel,
@@ -250,11 +260,7 @@ function errorMessage(error: unknown) {
     const message = authMessages[String(error.code)];
     if (message) return message;
   }
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'object' && error && 'message' in error) {
-    return String(error.message);
-  }
-  return '처리 중 알 수 없는 오류가 발생했습니다.';
+  return userFacingError(error);
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -308,21 +314,20 @@ function statusLabel(
 
 function NoticeBar({ notice }: { notice: Notice }) {
   if (!notice) return null;
+  if (notice.tone === 'error')
+    return <ErrorNotice message={notice.text} identity={notice} />;
   const style =
     notice.tone === 'success'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-      : notice.tone === 'error'
-        ? 'border-rose-200 bg-rose-50 text-rose-800'
-        : 'border-sky-200 bg-sky-50 text-sky-800';
-  const Icon = notice.tone === 'error' ? AlertTriangle : CheckCircle2;
+      : 'border-sky-200 bg-sky-50 text-sky-800';
+  const Icon = CheckCircle2;
   return (
-    <div
-      role={notice.tone === 'error' ? 'alert' : 'status'}
+    <output
       className={`mb-5 flex items-start gap-2 rounded-xl border px-4 py-3 text-sm ${style}`}
     >
       <Icon className="mt-0.5 size-4 shrink-0" />
       <span>{notice.text}</span>
-    </div>
+    </output>
   );
 }
 
@@ -731,6 +736,14 @@ function AuthPanel({
               <ArrowRight aria-hidden="true" />
             </Link>
             <div className="mt-5 flex flex-col items-center gap-3 text-sm">
+              <Link
+                href="/help"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-11 items-center text-teal-800 underline"
+              >
+                이용 안내·문의
+              </Link>
               <button
                 className="text-slate-600 hover:text-teal-700"
                 type="button"
@@ -1005,7 +1018,10 @@ function WorkspaceGate({
       setOnboarding(details);
       if (!details.ready) return;
       if (portal === 'auto') {
-        window.location.replace(portalPath(membership.role));
+        const destination = reportReturnPath(
+          new URLSearchParams(window.location.search).get('next'),
+        );
+        window.location.replace(destination ?? portalPath(membership.role));
         return;
       }
       const { data: organization, error: organizationError } = await supabase
@@ -1749,6 +1765,15 @@ function AdminConsole({
           <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between gap-4 px-4 md:px-6">
             <Brand onHome={() => requestNavigation('home')} />
             <div className="flex items-center gap-3">
+              <Link
+                href="/help"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-11 items-center text-sm font-semibold text-teal-800"
+                aria-label="이용 안내·문의"
+              >
+                도움말
+              </Link>
               <div className="hidden text-right sm:block">
                 <strong className="block text-sm">{portalTitle(role)}</strong>
                 <span className="block text-xs text-slate-500">
@@ -2987,10 +3012,18 @@ function InspectionsView(
     onOpenInspection: (id: string) => void;
   },
 ) {
+  const [selectedId] = useInspectionSelection(props.inspections);
+  const selected = props.inspections.find((row) => row.id === selectedId);
+  const detailRef = useRef<HTMLElement>(null);
+  const requestFormRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (props.requesterMode && selectedId) {
+      detailRef.current?.scrollIntoView({ block: 'start' });
+      detailRef.current?.focus({ preventScroll: true });
+    }
+  }, [props.requesterMode, selectedId]);
   const [plantId, setPlantId] = useState('');
-  const [code, setCode] = useState(
-    () => `INS-${koreanDate().replaceAll('-', '')}`,
-  );
+  const [code, setCode] = useState(() => newInspectionCode(koreanDate()));
   const [purpose, setPurpose] = useState('정기 열화상 점검');
   const [scheduledAt, setScheduledAt] = useState('');
   const [dueAt, setDueAt] = useState('');
@@ -3082,7 +3115,7 @@ function InspectionsView(
       setSearch('');
       setStatusFilter('all');
       intakeRequestId.current = crypto.randomUUID();
-      const nextCode = `INS-${Date.now().toString().slice(-8)}`;
+      const nextCode = newInspectionCode(koreanDate());
       setBaseline(
         JSON.stringify([
           effectivePlantId,
@@ -3193,13 +3226,98 @@ function InspectionsView(
             : '모든 일정은 한국 시간 기준입니다.'
         }
       />
+      {props.requesterMode && (
+        <>
+          {props.canCreate && (
+            <Button
+              type="button"
+              variant="outline"
+              className="mb-4 min-h-11"
+              onClick={() => {
+                requestFormRef.current?.scrollIntoView({ block: 'start' });
+                requestFormRef.current?.focus({ preventScroll: true });
+              }}
+            >
+              새 점검 요청으로 이동
+            </Button>
+          )}
+          <p className="mb-5 text-sm leading-6 text-slate-600">
+            사진은 담당 관리자·전문가가 등록합니다. 원본 사진이 있다면
+            담당자에게 전달 방법을 확인해 주세요.{' '}
+            <Link
+              href="/help"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold text-teal-800 underline"
+            >
+              이용 안내·문의
+            </Link>
+          </p>
+          {selected && (
+            <section
+              ref={detailRef}
+              tabIndex={-1}
+              aria-label="선택한 점검 상세"
+              className="mb-5 scroll-mt-40 rounded-2xl border border-teal-200 bg-teal-50 p-5 outline-none focus-visible:ring-2 focus-visible:ring-teal-700"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="font-bold">
+                  선택한 점검 · {plantName(selected.plant_id)}
+                </h2>
+                <StatusPill>
+                  {statusLabel(selected.status, inspectionStatuses)}
+                </StatusPill>
+              </div>
+              <p className="mt-2 break-all text-xs text-slate-500">
+                {selected.inspection_code}
+              </p>
+              <p className="mt-3 font-semibold">
+                {selected.purpose || '점검 의뢰'}
+              </p>
+              <p className="mt-2 text-sm leading-6">
+                {inspectionNextStep(selected.status)}
+              </p>
+              <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-slate-500">점검 예정</dt>
+                  <dd>{formatDateTime(selected.scheduled_at)}</dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">완료 목표</dt>
+                  <dd>{formatDateTime(selected.due_at)}</dd>
+                </div>
+              </dl>
+              {selected.notes && (
+                <p className="mt-4 whitespace-pre-wrap break-words text-sm">
+                  {selected.notes}
+                </p>
+              )}
+              {props.reports.some(
+                (r) =>
+                  r.inspection_id === selected.id && r.status === 'published',
+              ) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-4 min-h-11"
+                  onClick={() => props.onOpenInspection(selected.id)}
+                >
+                  발행 보고서 확인
+                </Button>
+              )}
+            </section>
+          )}
+        </>
+      )}
       <div
         className={`grid gap-5 ${props.canCreate ? 'xl:grid-cols-[380px_1fr]' : ''}`}
       >
         {props.canCreate && (
           <form
+            ref={requestFormRef}
+            tabIndex={-1}
             onSubmit={create}
-            className="h-fit space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
+            className="h-fit scroll-mt-40 space-y-4 rounded-2xl border bg-white p-5 shadow-sm"
           >
             <fieldset
               disabled={busy || rowBusy || Boolean(editingScheduleId)}
@@ -3396,13 +3514,15 @@ function InspectionsView(
             return (
               <article
                 key={inspection.id}
-                className="rounded-2xl border bg-white p-5 shadow-sm"
+                className={`rounded-2xl border bg-white p-5 shadow-sm ${props.requesterMode && inspection.id === selectedId ? 'border-teal-500 ring-1 ring-teal-500' : ''}`}
               >
                 <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <strong>{plantName(inspection.plant_id)}</strong>
-                      <StatusPill>{inspection.inspection_code}</StatusPill>
+                      <span className="max-w-full break-all rounded-full border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">
+                        {inspection.inspection_code}
+                      </span>
                     </div>
                     <p className="mt-2 text-sm text-slate-600">
                       {inspection.purpose || '목적 미입력'}
@@ -3479,7 +3599,17 @@ function InspectionsView(
                       className="min-h-11"
                       aria-label={`${inspection.inspection_code} 점검 열기`}
                       disabled={busy || rowBusy}
-                      onClick={() => props.onOpenInspection(inspection.id)}
+                      onClick={() => {
+                        props.onOpenInspection(inspection.id);
+                        if (
+                          props.requesterMode &&
+                          inspection.id === selectedId &&
+                          draftNavigationState(window) === 'clean'
+                        ) {
+                          detailRef.current?.scrollIntoView({ block: 'start' });
+                          detailRef.current?.focus({ preventScroll: true });
+                        }
+                      }}
                     >
                       점검 열기 <ArrowRight />
                     </Button>

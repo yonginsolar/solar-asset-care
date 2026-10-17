@@ -14,6 +14,7 @@ import {
   type AccountDetails,
 } from '@/lib/service-access';
 import { useDraftProtection } from '@/lib/use-draft-protection';
+import { ErrorNotice } from './error-notice';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -59,7 +60,13 @@ export function CustomersView({
   const [selected, setSelected] = useState('');
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
-  const [error, setError] = useState('');
+  const [error, setErrorState] = useState('');
+  const [errorAttempt, setErrorAttempt] = useState(0);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const setError = useCallback((message: string) => {
+    setErrorState(message);
+    if (message) setErrorAttempt((n) => n + 1);
+  }, []);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -98,7 +105,7 @@ export function CustomersView({
         ),
       settled: () => setLoading(false),
     });
-  }, [read]);
+  }, [read, setError]);
   const current = data?.customers.find((c) => c.id === selected);
   async function act(action: string, payload: Record<string, Json>) {
     if (lock.current) return;
@@ -147,12 +154,11 @@ export function CustomersView({
         </p>
       </div>
       {error && (
-        <p
-          role="alert"
-          className="rounded-xl bg-red-50 p-4 text-sm text-red-800"
-        >
-          {error}
-        </p>
+        <ErrorNotice
+          message={error}
+          identity={errorAttempt}
+          finalFocus={!name.trim() ? nameRef : undefined}
+        />
       )}
       {message && (
         <output className="block text-sm text-teal-800">{message}</output>
@@ -387,13 +393,21 @@ export function CustomersView({
             className={card + ' space-y-4'}
             onSubmit={(e) => {
               e.preventDefault();
+              if (!name.trim()) {
+                setError(
+                  kind === 'individual'
+                    ? '고객명을 입력해 주세요.'
+                    : '상호 / 법인명을 입력해 주세요.',
+                );
+                return;
+              }
               if (kind !== 'individual' && !businessNumberValid(bn)) {
                 setError('사업자등록번호를 확인해 주세요.');
                 return;
               }
               void act('customers.create', {
                 kind,
-                name,
+                name: name.trim(),
                 business_number: bn,
                 representative,
               });
@@ -420,6 +434,7 @@ export function CustomersView({
                   {kind === 'individual' ? '고객명' : '상호 / 법인명'}
                 </span>
                 <Input
+                  ref={nameRef}
                   required
                   maxLength={160}
                   value={name}

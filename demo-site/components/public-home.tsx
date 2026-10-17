@@ -195,6 +195,7 @@ function PublicLanding() {
         <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-5 text-xs text-slate-500">
           <span>SolarScope · Solar Asset Care</span>
           <div className="flex flex-wrap gap-5">
+            <Link href="/help">이용 안내·문의</Link>
             <Link href="/policy">이용약관·개인정보</Link>
             <Link href="/expert">전문가 작업실</Link>
             <Link href="/admin">관리자 운영센터</Link>

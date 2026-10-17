@@ -120,15 +120,39 @@ export async function serviceRpc<T>(
     throw new Error(
       result.error.code === '23505'
         ? '이미 등록된 사업자 또는 연결입니다. 기존 고객을 확인해 주세요.'
-        : result.error.message,
+        : userFacingError(result.error),
     );
   return result.data as T;
 }
 export function problem(error: unknown) {
-  return error &&
-    typeof error === 'object' &&
-    'message' in error &&
-    typeof error.message === 'string'
-    ? error.message
-    : '처리하지 못했습니다. 다시 시도해 주세요.';
+  return userFacingError(error);
+}
+
+/** Keep actionable application messages, not database/schema implementation details. */
+export function userFacingError(error: unknown) {
+  const record = error && typeof error === 'object' ? error : {};
+  const code = 'code' in record ? String(record.code) : '';
+  const message = 'message' in record ? String(record.message) : '';
+  if (
+    code === '23505' ||
+    /duplicate key value|unique constraint/i.test(message)
+  )
+    return /inspection_code/.test(message)
+      ? '이미 사용 중인 점검 번호입니다. 다른 번호로 입력해 주세요.'
+      : '이미 등록된 자료입니다. 기존 항목을 확인해 주세요.';
+  if (code === '23514' || /violates check constraint/i.test(message))
+    return /customer_accounts_name_check/.test(message)
+      ? '고객명을 입력해 주세요.'
+      : '입력값의 범위와 형식을 확인해 주세요.';
+  if (code === '23503' || /foreign key constraint/i.test(message))
+    return '연결된 자료가 변경되었습니다. 다시 불러온 뒤 확인해 주세요.';
+  if (
+    ['42501', 'PT403', '401', '403'].includes(code) ||
+    /row-level security|permission denied/i.test(message)
+  )
+    return '현재 이 작업을 처리할 권한이 없습니다. 계정과 담당 업무를 확인해 주세요.';
+  if (/fetch|network|connection|timeout|abort/i.test(message))
+    return '연결을 확인하지 못했습니다. 저장 결과를 먼저 확인한 뒤 다시 시도해 주세요.';
+  if (/[가-힣]/.test(message)) return message;
+  return '처리하지 못했습니다. 입력 내용을 확인하고 다시 시도해 주세요.';
 }

@@ -139,6 +139,9 @@ async function runCreate(requesterMode, fail = false, locked = false) {
   const context = vm.createContext({
     exports: {},
     crypto: { randomUUID },
+    koreanDate: () => '2026-10-17',
+    newInspectionCode: (day) =>
+      `INS-${day.replaceAll('-', '')}-${randomUUID()}`,
     createLock: { current: locked },
     intakeRequestId: { current: 'test-request' },
     effectivePlantId: 'test-plant',
