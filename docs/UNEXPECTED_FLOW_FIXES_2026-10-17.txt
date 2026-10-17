@@ -108,6 +108,11 @@ U4 접수 후 상세:
   archive SHA-256: dfeece51b1a72ee3ca90f04620d78d5f8df7d5c29955d202b90aef24345f937c
   v38과 v39의 런타임 archive hash 동일. 관련 앱/시험 6개 파일의 SHA-256은 GitHub 작업본과 일치.
   URL: https://solar-asset-care-demo.kimminho0914.chatgpt.site/
+  GitHub 구현/검증 commit 9633644 (main, origin push 성공).
+  배포 후 공개 경로 31건 재통과. 공개 관리자 화면을 새로 불러온 뒤 기존 민호 로그인과
+  SAMPLE-INS-002/SAMPLE-INS-001 두 종료 점검을 확인했고 warn/error 콘솔은 비어 있었다.
+  검수용 탭·화면 크기 override와 로컬 서버 정리 완료.
+  마지막 작업 트리에는 사전에 있던 CHANGELOG.md의 동일한 8줄 수정만 남겼다.
 
 6. 한계
 
