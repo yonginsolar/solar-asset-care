@@ -22,16 +22,19 @@
 배포 단위
 - migrations: 20261017044453, 20261017044653, 20261017044845.
 - Edge: supabase/functions/workflow-email. @supabase/server 1.9.2, deno.lock 동봉.
-- 함수는 verify_jwt=false이지만 32바이트 난수의 별도 서버 발송 토큰 필수. 사용자 JWT/publishable key로 호출 불가.
+- 함수는 verify_jwt=false이지만 32바이트 난수의 별도 서버 발송 토큰 또는 유효한 HMAC 서명 필수. 사용자 JWT/publishable key로 호출 불가.
+- cron 호출은 60초 유효기간의 HMAC 서명/nonce를 쓰고 DB에서 nonce를 한 번만 소비한다. pg_net의 확장 소유 테이블은 기본 PUBLIC ACL을 postgres가 회수할 수 없으므로 장기 키를 요청 headers/body에 넣지 않는다. Data API의 net 스키마 노출·권한 확대·supabase_admin 재위임을 하지 않았다.
 - 신규 서버 비밀 이름: RESEND_WORKFLOW_API_KEY, WORKFLOW_EMAIL_DISPATCH_SECRET, WORKFLOW_EMAIL_SITE_ORIGIN, WORKFLOW_EMAIL_FROM.
 - Vault: solar_workflow_email_dispatch_secret, solar_workflow_email_endpoint.
 - cron: solar-workflow-email-dispatch. 1분마다 대기/만료 처리 건이 있을 때만 Edge 호출.
 - 설치 SQL: supabase/operations/workflow_email_dispatcher.sql. 서버 연결 주소는 전용 설정, 메일의 사이트 주소/발신자는 서버 환경 설정.
-- 설정 도구: SOLAR_EMAIL_SETUP=1 node demo-site/scripts/configure-workflow-email.mjs. 정상 CLI 인증 사용, 비밀값은 숨긴 stdin/pipe만 사용.
-- 설정 도구의 공급자 시험은 공식 delivered+...@resend.dev 테스트 주소 3개로만 전송. 실제 사용자 수신함 시험과 구분.
+- 설정 순서: 정상 로그인된 Supabase 대시보드에서 네 서버 비밀값을 저장한 뒤 SOLAR_EMAIL_SETUP=1 node demo-site/scripts/configure-workflow-email.mjs. dispatchSecret만 숨긴 stdin/private FIFO로 전달해 Vault/cron을 연결한다.
+- CLI 2.121.0의 --env-file /dev/stdin 경로는 이 호스트에서 실패하므로 해당 경로를 반복하거나 비밀값을 argv/일반 파일로 우회하지 않는다. 브라우저 프로세스에는 CLI 정상 인증이 없으므로 인증된 작업 실행 환경을 쓴다.
+- 공급자 시험은 공식 delivered+...@resend.dev 주소만 사용. 실제 사용자 수신함 시험과 구분한다.
+- SOLAR_EMAIL_DELIVERY_QA=1 node demo-site/scripts/verify-workflow-email-delivery.mjs는 실제 Auth 점검 접수→cron→서명 검증→Resend 접수→중복 차단/이력→시험 자료 정리까지 확인한다.
 
 검증
-- 단위/회귀 203개 통과. 신규 메일 12개: 한글 본문, 역할별 링크, HTML escaping, 단일 수신자, 예약 주소 차단, idempotency, 429/실패/불명, 서버 토큰/설정, 처리 횟수 제한, 결과 저장 실패 시 중단.
+- 단위/회귀 204개 통과. 신규 메일 13개: 한글 본문, 역할별 링크, HTML escaping, 단일 수신자, 예약 주소 차단, idempotency, 429/실패/불명, 서버 토큰/설정, 처리 횟수 제한, 결과 저장 실패 시 중단, 서명 만료·변조·재사용 차단.
 - 격리 PostgreSQL 전체 마이그레이션 + 업무/권한 5개 묶음 통과. 신규 알림 SQL: 실제 보고서 발행/개정과 연결, 익명/인증 사용자 접근 거부, 수신 회수/상태 변경, 성공 응답 재전송, 롤백, lease/claim 위조/중복 완료/동시성 확인.
 - 실제 Auth 관리자 30개, 가입/동의/사업자 권한 28개 통과. 실제 업무 API 178개 통과, 가상 사용자/조직/파일만 만들고 정리.
 - 기존 Auth 3 / 조직 1 / 발전소 1 / 점검 2 / 보고서 2 / Storage 8, 멤버 hash b8718c77763c5c1612992752ac891065 유지 확인.
@@ -45,14 +48,19 @@
 - 비밀을 교체할 때 enabled=false에서 Edge/Vault의 내부 토큰을 함께 갱신하고, 인증 없는 호출 거부/정상 빈 큐 호출을 검증한 후 활성화.
 
 현재 배포/활성화 상태
-- 공개 사이트 v35, 소스 26eacb88733bd45a81aa1fc69c559a8a300d9b17.
+- 준비 단계 사이트 v35, 소스 26eacb88733bd45a81aa1fc69c559a8a300d9b17. 후속 활성화 반영은 저장소의 릴리즈 기록을 따른다.
 - Site 버전 appgprj_6a981be344a0819181e91aa8015c47c2~appgver_d2ce48b198c48191a0b5fdd34ab971f6.
 - 배포 appgdep_6ad2ff0e7ad08191be7260b2014c47d3 성공, audience=public / env revision=2 유지.
 - 직전 화면 복귀 버전은 v34 (appgver_2722f2d5b1fc8191b94cd952e4986b92). DB 발송 중지는 별도로 수행.
-- workflow-email Edge v2 ACTIVE. 익명 POST 401 확인.
+- workflow-email Edge v5 ACTIVE. 익명 POST 401 확인.
 - 배포 후 업무 API 180개, 공개 게스트 31개 통과. 시험 자료 정리 완료.
-- Resend 정상 로그인 확인. solarscope-workflow-email / Sending access / auth.coopco.kr 생성 화면에서 사용자 승인을 기다림. 아직 새 키를 생성하지 않음.
-- 공급자 시험 메일은 아직 보내지 않음. dispatcher cron/Vault/발송 키 설정도 아직 설치하지 않음.
-- enabled=false / outbox=0. 따라서 자동 발송을 시작했다고 표시하면 안 됨.
-- 사용자 승인 후 전용 키를 생성하고 configure-workflow-email.mjs를 실행하면 공식 공급자 시험 주소 3종 검증과 서버 연결을 수행한다.
-- 빈 큐의 인증된 호출 및 실제 cron→큐→공급자 시험을 검증한 후 enabled=true로 최종 전환한다. 기존 과거 점검/보고서는 소급 enqueue하지 않는다.
+- 2026-10-17 사용자 승인 후 solarscope-workflow-email 키 생성. Sending access / auth.coopco.kr 전용이며 기존 Auth SMTP 키·다른 서비스 키·요금제는 변경하지 않음.
+- 키 ID: 0ae952c3-e21b-4e58-87f6-c8c2662bbccf. 값은 서버 비밀 설정에만 저장, 로컬 파일/소스/로그에 보관하지 않음.
+- dispatcher cron/Vault/서버 비밀 4개 설정 완료. 빈 큐의 인증된 호출 200/processed=0 확인.
+- 접수/배정/발행 3종 공급자 공식 시험 주소에서 접수 확인.
+- 실제 cron 공급자 경로 시험 7개 통과. 별도 두 차례 모두 접수 1회/attempts=1을 확인했고 최종 정리 포함 재실행은 정상 종료.
+- 첫 시험의 정리는 기존 audit_events 삭제 제한 FK 때문에 중단됐으며, 정확히 생성한 시험 조직/사용자만 명시 FK 순서로 정리한 뒤 시험 정리 코드를 보완했다. 기존 이력·고객 자료·발행본은 삭제하지 않았다.
+- 최종 공급자 시험 ID: 01a14846-2ca7-77c2-a701-e9ff71d8e8e9. 테스트 전용 주소의 시뮬레이션 결과이며 실제 고객의 수신함/열람을 검증한 것은 아니다.
+- enabled=true, 매분 대기 건만 호출. 기존 과거 점검/보고서는 소급 enqueue하지 않는다. 문자와 문자 대체 발송은 계속 미구현/보류.
+- 일회용 서명 마이그레이션 20261017050901 추가. 기존 고객·전문가·관리자 역할·RLS·초대/가입 경로는 변경하지 않음.
+- 활성화 후 실제 Auth 30+28개와 공개 업무 180개를 다시 통과했다. 시험 자료 정리 후 Auth 3 / 조직 1 / 발전소 1 / 점검 2 / 보고서 2 / Storage 8 / 기존 멤버 hash / 민호 최고관리자 보호 동일, outbox=0 확인.

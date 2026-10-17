@@ -1,30 +1,22 @@
-// Explicit, project-scoped setup only. Secrets travel by pipe, never argv/files/logs.
+// Project-scoped dispatcher setup after the four server secrets are saved via
+// the authenticated Supabase dashboard. No provider key is read or stored here.
+// Supply {dispatchSecret: "..."} via hidden stdin/private FIFO, never argv/files.
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deliverMail } from '../../supabase/functions/workflow-email/mail.ts';
-import { randomUUID } from 'node:crypto';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const project = 'vzgmryqglptxowbdewkf';
 const endpoint =
   'https://' + project + '.supabase.co/functions/v1/workflow-email';
 if (process.env.SOLAR_EMAIL_SETUP !== '1')
   throw Error('Explicit SOLAR_EMAIL_SETUP=1 required');
-function cli(args, input) {
-  return execFileSync('npx', ['--yes', 'supabase@2.121.0', ...args], {
-    cwd: root,
-    input,
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    maxBuffer: 2e6,
-    timeout: 60000,
-  });
-}
-function sql(query) {
-  return cli(
+function sql(input) {
+  return execFileSync(
+    'npx',
     [
+      '--yes',
+      'supabase@2.121.0',
       'db',
       'query',
       '--linked',
@@ -33,15 +25,23 @@ function sql(query) {
       '--file',
       '/dev/stdin',
     ],
-    query,
+    {
+      cwd: root,
+      input,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 2e6,
+      timeout: 60000,
+    },
   );
 }
-let echoDisabled = false;
+let echoDisabled = false,
+  stage = 'input';
 try {
   if (process.stdin.isTTY) {
     execFileSync('stty', ['-echo'], { stdio: 'inherit' });
     echoDisabled = true;
-    console.log('Ready for hidden provider configuration JSON on stdin.');
+    console.log('Ready for hidden dispatcher configuration JSON on stdin.');
   }
   const input = JSON.parse(
     await new Promise((resolve) => {
@@ -57,51 +57,15 @@ try {
     execFileSync('stty', ['echo'], { stdio: 'inherit' });
     echoDisabled = false;
   }
-  const key = input.providerKey;
-  if (typeof key !== 'string' || !/^re_[A-Za-z0-9_-]{16,200}$/.test(key))
-    throw Error('Invalid key');
+  const token = input.dispatchSecret;
+  process.stdin.pause();
+  if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token))
+    throw Error('Invalid dispatcher secret');
+  stage = 'preflight';
   sql(
     "do $check$ begin if (select enabled from private.workflow_email_settings where singleton) then raise exception 'Disable mail before changing configuration';end if;end $check$;",
   );
-  // Provider-owned test sinks only, never a customer mailbox.
-  // They simulate delivery and are not proof of an actual user's inbox.
-  for (const [kind, role] of [
-    ['inspection_received', 'client'],
-    ['expert_assigned', 'expert'],
-    ['report_published', 'client'],
-  ]) {
-    const probe = await deliverMail(
-      {
-        id: randomUUID(),
-        claimToken: 'provider-test',
-        kind,
-        role,
-        email: 'delivered+solar-' + kind + '@resend.dev',
-        inspectionCode: '공급자 연결 시험 · 실제 점검 아님',
-        inspectionId: randomUUID(),
-        reportId: randomUUID(),
-      },
-      key,
-      {
-        origin: 'https://solar-asset-care-demo.kimminho0914.chatgpt.site',
-        from: 'SolarScope <no-reply@auth.coopco.kr>',
-      },
-    );
-    if (probe.result !== 'accepted') throw Error('Provider test failed');
-    console.log('Provider test accepted: ' + kind);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-  const token = randomBytes(32).toString('hex');
-  cli(
-    ['secrets', 'set', '--project-ref', project, '--env-file', '/dev/stdin'],
-    [
-      'RESEND_WORKFLOW_API_KEY=' + key,
-      'WORKFLOW_EMAIL_DISPATCH_SECRET=' + token,
-      'WORKFLOW_EMAIL_SITE_ORIGIN=https://solar-asset-care-demo.kimminho0914.chatgpt.site',
-      'WORKFLOW_EMAIL_FROM="SolarScope <no-reply@auth.coopco.kr>"',
-      '',
-    ].join('\n'),
-  );
+  stage = 'vault';
   sql(
     'do $vault$ declare id uuid;begin ' +
       "select s.id into id from vault.secrets s where name='solar_workflow_email_dispatch_secret';" +
@@ -119,12 +83,14 @@ try {
       endpoint +
       "');end if;end $vault$;",
   );
+  stage = 'cron';
   sql(
     readFileSync(
       resolve(root, 'supabase/operations/workflow_email_dispatcher.sql'),
       'utf8',
     ),
   );
+  stage = 'worker';
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -146,7 +112,9 @@ try {
   );
 } catch {
   console.error(
-    'Workflow mail configuration did not complete; mail remains disabled. Inspect project configuration without exposing secret values.',
+    'Workflow mail configuration did not complete at ' +
+      stage +
+      '; mail remains disabled. Inspect configuration without exposing secret values.',
   );
   process.exitCode = 1;
 } finally {

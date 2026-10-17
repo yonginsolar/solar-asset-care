@@ -2,6 +2,18 @@
 -- No Edge/provider requests. local.fixture addresses exist only in the disposable DB.
 reset role;
 -- Focus queue consumption on this case; other suites' disposable case is separate.
+select gen_random_uuid() as dispatch_nonce, floor(extract(epoch from clock_timestamp()))::bigint as dispatch_stamp \gset
+set local role anon;
+select public.qa_denied(format('select public.accept_workflow_email_invocation(%L,%L)',:'dispatch_nonce',:'dispatch_stamp'),'permission denied','mail: anonymous cannot consume dispatcher nonce');
+reset role;
+set local role authenticated;
+select public.qa_denied(format('select public.accept_workflow_email_invocation(%L,%L)',:'dispatch_nonce',:'dispatch_stamp'),'permission denied','mail: signed-in user cannot consume dispatcher nonce');
+reset role;
+set local role service_role;
+select public.qa_assert(public.accept_workflow_email_invocation(:'dispatch_nonce',:'dispatch_stamp'),'mail: first authenticated nonce is accepted');
+select public.qa_assert(not public.accept_workflow_email_invocation(:'dispatch_nonce',:'dispatch_stamp'),'mail: nonce replay denied');
+select public.qa_assert(not public.accept_workflow_email_invocation(gen_random_uuid(),:'dispatch_stamp'::bigint-120),'mail: expired dispatcher nonce denied');
+reset role;
 delete from private.workflow_emails where inspection_id<>:'inspection';
 select public.qa_assert((select count(*)=5 from private.workflow_emails),'mail: receipt owner/client, initial expert and two issued versions only');
 select public.qa_assert((select count(*)=2 from private.workflow_emails where kind='report_published' and recipient_role='client'),'mail: actual publication transitions enqueue once each');

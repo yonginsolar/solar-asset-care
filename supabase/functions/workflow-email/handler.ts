@@ -3,6 +3,38 @@ type Rpc = (
   name: string,
   args: Record<string, unknown>,
 ) => PromiseLike<{ data: unknown; error: unknown }>;
+async function signedInvocation(req: Request, secret: string) {
+  const stamp = req.headers.get("x-workflow-timestamp") ?? "";
+  const nonce = req.headers.get("x-workflow-nonce") ?? "";
+  const signature = req.headers.get("x-workflow-signature") ?? "";
+  if (
+    !/^\d{10}$/.test(stamp) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      nonce,
+    ) ||
+    !/^[0-9a-f]{64}$/.test(signature) ||
+    Math.abs(Date.now() / 1000 - Number(stamp)) > 60
+  ) return null;
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  const bytes = new Uint8Array(
+    signature.match(/../g)!.map((hex) => parseInt(hex, 16)),
+  );
+  return await crypto.subtle.verify(
+      "HMAC",
+      key,
+      bytes,
+      encoder.encode("POST:workflow-email:" + stamp + ":" + nonce),
+    )
+    ? { nonce, timestamp: Number(stamp) }
+    : null;
+}
 export async function handleWorkflowEmail(
   req: Request,
   env: (name: string) => string | undefined,
@@ -10,10 +42,12 @@ export async function handleWorkflowEmail(
   deliver = deliverMail,
 ) {
   const secret = env("WORKFLOW_EMAIL_DISPATCH_SECRET");
-  if (
-    !secret || secret.length < 32 ||
-    req.headers.get("authorization") !== "Bearer " + secret
-  ) return new Response("Unauthorized", { status: 401 });
+  if (!secret || secret.length < 32) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const bearer = req.headers.get("authorization") === "Bearer " + secret;
+  const signed = bearer ? null : await signedInvocation(req, secret);
+  if (!bearer && !signed) return new Response("Unauthorized", { status: 401 });
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
@@ -36,6 +70,20 @@ export async function handleWorkflowEmail(
   }
   let processed = 0;
   try {
+    if (signed) {
+      const { data: accepted, error } = await rpc(
+        "accept_workflow_email_invocation",
+        { p_nonce: signed.nonce, p_timestamp: signed.timestamp },
+      );
+      if (error) {
+        return Response.json({ error: "Mail dispatcher unavailable" }, {
+          status: 503,
+        });
+      }
+      if (accepted !== true) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+    }
     for (let n = 0; n < 5; n++) {
       const { data, error } = await rpc("claim_workflow_emails", {
         p_limit: 1,

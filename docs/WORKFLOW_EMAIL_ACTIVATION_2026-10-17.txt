@@ -1,0 +1,44 @@
+SolarScope 업무 메일 활성화 — 2026-10-17 (한국 시간)
+
+사용자 승인: solarscope-workflow-email 생성·연결.
+신규 Resend 키: Sending access, auth.coopco.kr 한 도메인.
+기존 초대 SMTP 키/다른 서비스 키/요금제/SMS 보류는 유지.
+
+완료
+- Supabase 서버 비밀 4개와 Vault 2개를 정상 인증 경로로 연결.
+- 내장 cron solar-workflow-email-dispatch active=true. 매분 실제 대기 건만 처리.
+- enabled=true. 과거 자료의 소급 발송 없음.
+- 업무 접수 시 의뢰인/관리자, 배정 시 해당 전문가/의뢰인, 보고서 발행 시 의뢰인.
+- 재전송·동시 claim·탈퇴/정지·배정/발행 회수·비밀번호/동의 미완료 차단 유지.
+- 일회용 HMAC + 60초 만료 + 서버 nonce 소비. 확장 소유 pg_net 테이블에 장기 키를 넣지 않음.
+- 기존 관리자/전문가/의뢰인 역할 및 DB 관리자 권한을 확대하지 않음.
+- 준비 단계 설정 도구의 stdin/env-file 호환 문제를 대시보드 등록 경로로 해결.
+- 시험 이력의 FK 삭제 제한은 유지하고 시험 조직만 정확한 FK 순서로 정리하도록 점검 도구를 수정.
+
+검증
+- 단위/회귀 204개, 메일 특화 13개 포함.
+- 실제 PostgreSQL 격리 전체 마이그레이션/권한/일회용 nonce/동시 claim 검사 통과.
+- 실제 Auth 관리자 30개/가입·동의·사업자 연결 28개, 활성화 후 공개 업무 180개 통과.
+- 공식 Resend 시험 주소의 접수·배정·발행 3종 발송 접수 확인.
+- 실제 Auth 점검 생성→실제 cron→서명 검증→Resend 접수/attempts=1→관리자 이력→중복 차단/정리 7개 통과.
+- cron 시험은 2회 모두 공급자 접수 1회씩 확인. 최종 재실행은 정리 포함 정상 종료.
+- 실제 고객에게 시험 메일을 보내지 않음. 공급자 테스트 sink의 시뮬레이션이며 실제 수신함/열람은 별도.
+- 기존 Auth 3, 조직 1, 발전소 1, 점검 2, 보고서 2, Storage 8, intake receipt 0 유지.
+- 회원 hash b8718c77763c5c1612992752ac891065 / 민호 최고관리자 보호 유지, outbox=0.
+- 신규 보안 advisory 없음. 기존 유출 비밀번호 검사 미사용 경고는 설정 변경하지 않음.
+
+배포
+- 사이트 v36, source 6fb6ddea32115ee252ede47657a1190652d9d7eb.
+- saved version appgprj_6a981be344a0819181e91aa8015c47c2~appgver_bdf9bab0c8f0819185be2fb24b471335.
+- deployment appgdep_6ad3043e8520819186298f7e172eebf3, succeeded.
+- 공개 범위 public / Site env revision 2 유지.
+- URL https://solar-asset-care-demo.kimminho0914.chatgpt.site/
+- Edge workflow-email v5 ACTIVE. 신규 마이그레이션 20261017050901.
+- 설정 비밀값은 소스/일반 로컬 파일/로그/쉘 인자에 보관하지 않음. 임시 FIFO와 메모리 변수 정리.
+
+중지/복구
+- update private.workflow_email_settings set enabled=false where singleton;
+- 필요한 경우 이 이름의 cron job만 비활성화. 진행 중 요청이 취소됐다고 추정하지 않음.
+- unknown/accepted 기록을 지워 재발송하지 않음. 공급자 접수와 실제 수신 완료를 구분.
+- 사이트만 되돌리려면 v35를 사용할 수 있으나 메일 서버 중지는 위 설정으로 별도 실행.
+- 상세 구현/검증/설정 방법은 demo-site/docs/WORKFLOW_EMAIL_2026-10-17.txt 참고.

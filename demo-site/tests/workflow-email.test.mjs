@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { createHmac, randomUUID } from 'node:crypto';
 const source = readFileSync(
   new URL('../../supabase/functions/workflow-email/mail.ts', import.meta.url),
   'utf8',
@@ -313,4 +314,45 @@ test('worker bounds batches, stops on 429, and handles transport rejection', asy
   });
   assert.equal(failed.status, 503);
   assert.ok(!(await failed.text()).includes('secret'));
+});
+test('scheduled calls use expiring signed nonces; replay and tampering fail closed', async () => {
+  const seen = new Set();
+  let claims = 0;
+  const rpc = async (name, args) => {
+    if (name === 'accept_workflow_email_invocation') {
+      if (seen.has(args.p_nonce)) return { data: false, error: null };
+      seen.add(args.p_nonce);
+      return { data: true, error: null };
+    }
+    claims++;
+    return { data: [], error: null };
+  };
+  const nonce = randomUUID(),
+    stamp = String(Math.floor(Date.now() / 1000));
+  const signature = createHmac('sha256', vars.WORKFLOW_EMAIL_DISPATCH_SECRET)
+    .update('POST:workflow-email:' + stamp + ':' + nonce)
+    .digest('hex');
+  const signed = (overrides = {}) =>
+    new Request('https://local.fixture/worker', {
+      method: 'POST',
+      headers: {
+        'x-workflow-timestamp': stamp,
+        'x-workflow-nonce': nonce,
+        'x-workflow-signature': signature,
+        ...overrides,
+      },
+    });
+  assert.equal((await handleWorkflowEmail(signed(), env, rpc)).status, 200);
+  assert.equal((await handleWorkflowEmail(signed(), env, rpc)).status, 401);
+  assert.equal(claims, 1);
+  for (const overrides of [
+    { 'x-workflow-signature': '0'.repeat(64) },
+    { 'x-workflow-nonce': randomUUID() },
+    { 'x-workflow-timestamp': String(Number(stamp) - 120) },
+  ]) {
+    const response = await handleWorkflowEmail(signed(overrides), env, () => {
+      throw Error('unauthenticated DB call');
+    });
+    assert.equal(response.status, 401);
+  }
 });
