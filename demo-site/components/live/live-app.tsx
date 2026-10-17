@@ -102,6 +102,7 @@ import {
 import { draftNavigationState } from '@/lib/draft-navigation';
 import {
   filterInspections,
+  inspectionEmptyState,
   inspectionStatuses,
   type InspectionStatusFilter,
 } from '@/lib/inspection-directory';
@@ -3078,6 +3079,8 @@ function InspectionsView(
           });
       if (error) throw error;
       props.setNotice({ tone: 'success', text: '점검을 접수했습니다.' });
+      setSearch('');
+      setStatusFilter('all');
       intakeRequestId.current = crypto.randomUUID();
       const nextCode = `INS-${Date.now().toString().slice(-8)}`;
       setBaseline(
@@ -3167,6 +3170,10 @@ function InspectionsView(
     props.plants.find((plant) => plant.id === id)?.name ?? '삭제된 발전소';
   const activeExperts = props.members.filter(
     (member) => member.role === 'expert' && member.status === 'active',
+  );
+  const emptyState = inspectionEmptyState(
+    props.expertMode ? 'expert' : props.requesterMode ? 'client' : 'owner',
+    props.plants.length > 0,
   );
 
   return (
@@ -3375,13 +3382,16 @@ function InspectionsView(
                 r.inspection_id === inspection.id &&
                 ['draft', 'review', 'approved'].includes(r.status),
             );
-            const availableStatuses = inspectionStatuses.filter(
-              ([key]) =>
-                !hasOpenReport &&
-                manualInspectionStatuses(
-                  inspection.status,
-                  props.expertMode,
-                ).includes(key),
+            const hasPublishedReport = props.reports.some(
+              (report) =>
+                report.inspection_id === inspection.id &&
+                report.status === 'published',
+            );
+            const availableStatuses = inspectionStatuses.filter(([key]) =>
+              manualInspectionStatuses(inspection.status, props.expertMode, {
+                hasPublishedReport,
+                hasOpenReport,
+              }).includes(key),
             );
             return (
               <article
@@ -3542,8 +3552,8 @@ function InspectionsView(
           {props.inspections.length === 0 && (
             <EmptyState
               icon={ClipboardCheck}
-              title="접수된 점검이 없습니다"
-              copy="새 점검 접수 양식에서 점검을 등록하세요."
+              title={emptyState.title}
+              copy={emptyState.copy}
             />
           )}
           {props.inspections.length > 0 && filteredInspections.length === 0 && (

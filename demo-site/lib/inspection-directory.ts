@@ -15,6 +15,28 @@ export type InspectionStatusFilter =
   | 'all'
   | (typeof inspectionStatuses)[number][0];
 
+export function inspectionEmptyState(
+  role: 'owner' | 'expert' | 'client',
+  hasPlants: boolean,
+) {
+  if (role === 'expert')
+    return {
+      title: '아직 배정된 점검이 없습니다',
+      copy: '관리자가 점검을 배정하면 이곳에서 자료를 확인하고 검토할 수 있습니다.',
+    };
+  return {
+    title:
+      role === 'client'
+        ? '아직 의뢰한 점검이 없습니다'
+        : '접수된 점검이 없습니다',
+    copy: !hasPlants
+      ? '먼저 발전소를 등록한 뒤 점검을 의뢰할 수 있습니다.'
+      : role === 'client'
+        ? '새 점검 요청에서 발전소를 선택하고 점검을 의뢰해 주세요.'
+        : '새 점검 접수 양식에서 점검을 등록하세요.',
+  };
+}
+
 type SearchableInspection = {
   plant_id: string;
   inspection_code: string;
